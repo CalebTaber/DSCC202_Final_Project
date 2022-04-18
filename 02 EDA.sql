@@ -32,12 +32,20 @@
 
 -- COMMAND ----------
 
+USE ethereumetl;
+SELECT * FROM transactions LIMIT 1000;
+
+-- COMMAND ----------
+
 -- MAGIC %md
 -- MAGIC ## Q: What is the maximum block number and date of block in the database
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+SELECT number, CAST(CAST(timestamp AS TIMESTAMP) AS DATE) AS date 
+FROM blocks 
+WHERE number = (SELECT MAX(number) FROM blocks);
 
 -- COMMAND ----------
 
@@ -46,7 +54,8 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+SELECT MIN(block_number) FROM token_transfers;
 
 -- COMMAND ----------
 
@@ -56,6 +65,11 @@
 -- COMMAND ----------
 
 -- TBD
+USE ethereumetl;
+SELECT COUNT(*) FROM tokens; -- Is this right?
+-- SELECT * FROM contracts limit 500;
+-- SELECT COUNT(*) FROM contracts WHERE (is_erc20 IS null AND is_erc721 IS null); {2861020}
+-- SELECT DISTINCT is_erc20 FROM contracts; {null, FALSE}
 
 -- COMMAND ----------
 
@@ -64,7 +78,8 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+SELECT COUNT(*) FROM transactions WHERE to_address = ''; -- I think this is correct (NEED TO DIVIDE BY TOTAL)
 
 -- COMMAND ----------
 
@@ -73,7 +88,12 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+
+SELECT COUNT(*) AS frequency, token_address, name
+FROM (token_transfers LEFT JOIN tokens ON token_address=address)
+GROUP BY token_address, name
+ORDER BY COUNT(*) DESC LIMIT 100;
 
 -- COMMAND ----------
 
@@ -84,6 +104,9 @@
 -- COMMAND ----------
 
 -- TBD
+USE ethereumetl;
+SELECT COUNT(DISTINCT to_address)
+FROM (token_transfers INNER JOIN tokens ON token_address=address);
 
 -- COMMAND ----------
 
@@ -95,6 +118,7 @@
 
 -- TBD
 
+
 -- COMMAND ----------
 
 -- MAGIC %md
@@ -105,6 +129,7 @@
 
 -- TBD
 
+
 -- COMMAND ----------
 
 -- MAGIC %md
@@ -114,6 +139,8 @@
 -- COMMAND ----------
 
 -- TBD
+USE ethereumetl;
+SELECT SUM(value)/(1000000000000000000) FROM transactions;
 
 -- COMMAND ----------
 
@@ -123,6 +150,8 @@
 -- COMMAND ----------
 
 -- TBD
+USE ethereumetl;
+SELECT SUM(gas) FROM transactions;
 
 -- COMMAND ----------
 
