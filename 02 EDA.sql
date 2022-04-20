@@ -32,11 +32,6 @@
 
 -- COMMAND ----------
 
-USE ethereumetl;
-SELECT * FROM transactions LIMIT 1000;
-
--- COMMAND ----------
-
 -- MAGIC %md
 -- MAGIC ## Q: What is the maximum block number and date of block in the database
 
@@ -55,7 +50,8 @@ WHERE number = (SELECT MAX(number) FROM blocks);
 -- COMMAND ----------
 
 USE ethereumetl;
-SELECT MIN(block_number) FROM token_transfers;
+SELECT MIN(block_number)
+FROM token_transfers;
 
 -- COMMAND ----------
 
@@ -64,12 +60,10 @@ SELECT MIN(block_number) FROM token_transfers;
 
 -- COMMAND ----------
 
--- TBD
 USE ethereumetl;
-SELECT COUNT(*) FROM tokens; -- Is this right?
--- SELECT * FROM contracts limit 500;
--- SELECT COUNT(*) FROM contracts WHERE (is_erc20 IS null AND is_erc721 IS null); {2861020}
--- SELECT DISTINCT is_erc20 FROM contracts; {null, FALSE}
+
+SELECT COUNT(*)
+FROM contracts C INNER JOIN tokens T ON C.address=T.address;
 
 -- COMMAND ----------
 
@@ -79,7 +73,8 @@ SELECT COUNT(*) FROM tokens; -- Is this right?
 -- COMMAND ----------
 
 USE ethereumetl;
-SELECT COUNT(*) FROM transactions WHERE to_address = ''; -- I think this is correct (NEED TO DIVIDE BY TOTAL)
+SELECT AVG(CASE WHEN to_address='' THEN 1.0 ELSE 0.0 END) AS contractCallPercentage
+FROM transactions;
 
 -- COMMAND ----------
 
@@ -107,6 +102,7 @@ ORDER BY COUNT(*) DESC LIMIT 100;
 USE ethereumetl;
 SELECT COUNT(DISTINCT to_address)
 FROM (token_transfers INNER JOIN tokens ON token_address=address);
+-- TODO not tractable
 
 -- COMMAND ----------
 
@@ -127,8 +123,8 @@ FROM (token_transfers INNER JOIN tokens ON token_address=address);
 
 -- COMMAND ----------
 
--- TBD
-
+SELECT MAX(transaction_count)/15 AS MaxThroughput
+FROM blocks;
 
 -- COMMAND ----------
 
@@ -138,9 +134,9 @@ FROM (token_transfers INNER JOIN tokens ON token_address=address);
 
 -- COMMAND ----------
 
--- TBD
 USE ethereumetl;
-SELECT SUM(value)/(1000000000000000000) FROM transactions;
+SELECT (SUM(value)/(1000000000000000000)) AS EtherVolume
+FROM transactions;
 
 -- COMMAND ----------
 
@@ -149,9 +145,9 @@ SELECT SUM(value)/(1000000000000000000) FROM transactions;
 
 -- COMMAND ----------
 
--- TBD
 USE ethereumetl;
-SELECT SUM(gas) FROM transactions;
+SELECT SUM(gas) AS TotalGas
+FROM transactions;
 
 -- COMMAND ----------
 
@@ -160,7 +156,9 @@ SELECT SUM(gas) FROM transactions;
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+SELECT (MAX(value)/(1000000000000000000)) AS MaxTransfers
+FROM transactions T INNER JOIN tokens K ON T.address=K.address;
 
 -- COMMAND ----------
 
@@ -170,6 +168,7 @@ SELECT SUM(gas) FROM transactions;
 -- COMMAND ----------
 
 -- TBD
+ -- Do we assume that addresses start with zero balance from beginning of data?
 
 -- COMMAND ----------
 
@@ -179,6 +178,7 @@ SELECT SUM(gas) FROM transactions;
 -- COMMAND ----------
 
 -- TBD
+
 
 -- COMMAND ----------
 
