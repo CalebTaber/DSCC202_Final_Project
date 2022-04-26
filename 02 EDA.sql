@@ -1,4 +1,39 @@
 -- Databricks notebook source
+USE g04_db;
+
+DROP TABLE IF EXISTS tokens_silver;
+
+CREATE TABLE tokens_silver USING DELTA
+(
+  address STRING,
+  name STRING,
+  price_usd DOUBLE
+);
+
+INSERT INTO tokens_silver
+  SELECT contract_address, name, price_usd
+  FROM ethereumetl.token_prices_usd INNER JOIN ethereumetl.contracts ON contract_address=address
+    WHERE asset_platform_id = 'ethereum';
+
+-- COMMAND ----------
+
+WITH CTE AS(
+   SELECT address, name, price_usd, ROW_NUMBER() OVER(PARTITION BY address ORDER BY name) AS RN
+   FROM tokens_silver
+)
+DELETE FROM CTE WHERE RN > 1
+
+-- COMMAND ----------
+
+SELECT * FROM tokens_silver;
+
+-- COMMAND ----------
+
+SELECT COUNT(*), COUNT(DISTINCT name), COUNT(DISTINCT address)
+FROM tokens_silver;
+
+-- COMMAND ----------
+
 -- MAGIC %md
 -- MAGIC ## Ethereum Blockchain Data Analysis - <a href=https://github.com/blockchain-etl/ethereum-etl-airflow/tree/master/dags/resources/stages/raw/schemas>Table Schemas</a>
 -- MAGIC - **Transactions** - Each block in the blockchain is composed of zero or more transactions. Each transaction has a source address, a target address, an amount of Ether transferred, and an array of input bytes. This table contains a set of all transactions from all blocks, and contains a block identifier to get associated block-specific information associated with each transaction.
@@ -72,8 +107,9 @@ FROM contracts C INNER JOIN tokens T ON C.address=T.address;
 
 -- COMMAND ----------
 
+-- TODO replace with CASE WHEN to_address is a contract address
 USE ethereumetl;
-SELECT AVG(CASE WHEN to_address='' THEN 1.0 ELSE 0.0 END) AS contractCallPercentage
+SELECT AVG(CASE WHEN to_address='' THEN 1.0 ELSE 0.0 END)*100 AS contractCallPercentage
 FROM transactions;
 
 -- COMMAND ----------
@@ -98,11 +134,14 @@ ORDER BY COUNT(*) DESC LIMIT 100;
 
 -- COMMAND ----------
 
--- TBD
 USE ethereumetl;
-SELECT COUNT(DISTINCT to_address)
-FROM (token_transfers INNER JOIN tokens ON token_address=address);
--- TODO not tractable
+
+SELECT (COUNT(to_address)/SUM(count))*100 AS newAddrPercentage
+FROM (
+  SELECT to_address, COUNT(*) AS count
+  FROM token_transfers
+  GROUP BY to_address
+);
 
 -- COMMAND ----------
 
@@ -112,8 +151,18 @@ FROM (token_transfers INNER JOIN tokens ON token_address=address);
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
 
+SELECT transaction_index, gas_price
+FROM transactions
+WHERE block_hash=(SELECT hash
+                  FROM blocks
+                  WHERE timestamp=(SELECT MAX(timestamp)
+                                   FROM blocks))
+ORDER BY gas_price DESC;
+
+-- This query shows that transactions with higher gas prices are generally included earlier in the block than transactions with lower gas prices
+-- However, there can be slight variations in this rule
 
 -- COMMAND ----------
 
@@ -156,9 +205,16 @@ FROM transactions;
 
 -- COMMAND ----------
 
+-- TODO CHECK
+
 USE ethereumetl;
-SELECT (MAX(value)/(1000000000000000000)) AS MaxTransfers
-FROM transactions T INNER JOIN tokens K ON T.address=K.address;
+
+SELECT MAX(count)
+FROM (
+      SELECT transaction_hash, COUNT(*) AS count
+      FROM token_transfers
+      GROUP BY transaction_hash
+      );
 
 -- COMMAND ----------
 
@@ -167,8 +223,33 @@ FROM transactions T INNER JOIN tokens K ON T.address=K.address;
 
 -- COMMAND ----------
 
--- TBD
- -- Do we assume that addresses start with zero balance from beginning of data?
+SELECT to_address FROM transactions LIMIT 100;
+
+-- COMMAND ----------
+
+SET tmp=${wallet_address};
+
+-- COMMAND ----------
+
+SELECT number
+FROM blocks
+WHERE CAST(CAST(timestamp AS TIMESTAMP) AS DATE) > CAST('${start_date}' AS DATE)
+ORDER BY timestamp ASC;
+
+-- COMMAND ----------
+
+USE ethereumetl;
+
+--= 0x5df9b87991262f6ba471f09758cde1c0fc1de734;
+--SET startDate = str_to_date('2017/01/01', '%Y/%m/%d');
+
+--SELECT from_address, SUM(value) AS sold
+--FROM token_transfers
+--WHERE from_address = addr AND block_number < (SELECT MIN(number)
+--                                              FROM blocks
+--                                              WHERE CAST(CAST(timestamp AS TIMESTAMP) AS DATE) > startDate
+--                                              )
+--GROUP BY from_address;
 
 -- COMMAND ----------
 
@@ -177,8 +258,11 @@ FROM transactions T INNER JOIN tokens K ON T.address=K.address;
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
 
+SELECT CAST(CAST(timestamp AS TIMESTAMP) AS DATE) AS date, transaction_count
+FROM blocks
+WHERE transaction_count > 0;
 
 -- COMMAND ----------
 
@@ -188,8 +272,15 @@ FROM transactions T INNER JOIN tokens K ON T.address=K.address;
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
 
+SELECT CAST(CAST(B.timestamp AS TIMESTAMP) AS DATE) AS date, COUNT(*)
+FROM blocks B, token_transfers T
+WHERE T.block_number=B.number
+GROUP BY B.timestamp;
+
+-- For some reason, the plot does not show up correctly in the output.
+-- However, when I click "Plot Options" the preview of the plot looks correct
 
 -- COMMAND ----------
 
