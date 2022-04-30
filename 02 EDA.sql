@@ -3,34 +3,41 @@ USE g04_db;
 
 DROP TABLE IF EXISTS tokens_silver;
 
-CREATE TABLE tokens_silver USING DELTA
+CREATE TABLE tokens_silver
 (
   address STRING,
   name STRING,
-  price_usd DOUBLE
-);
+  symbol STRING,
+  price_usd DOUBLE  
+)
+USING delta;
 
 INSERT INTO tokens_silver
-  SELECT contract_address, name, price_usd
-  FROM ethereumetl.token_prices_usd INNER JOIN ethereumetl.contracts ON contract_address=address
-    WHERE asset_platform_id = 'ethereum';
+  SELECT DISTINCT TPU.contract_address, TPU.name, TPU.symbol, TPU.price_usd
+  FROM ethereumetl.token_prices_usd TPU INNER JOIN ethereumetl.tokens T ON contract_address=address
+    WHERE asset_platform_id = 'ethereum' AND price_usd > 0.0;
 
 -- COMMAND ----------
 
-WITH CTE AS(
-   SELECT address, name, price_usd, ROW_NUMBER() OVER(PARTITION BY address ORDER BY name) AS RN
-   FROM tokens_silver
+USE g04_db;
+
+DROP TABLE IF EXISTS token_transfers_silver;
+
+CREATE TABLE token_transfers_silver
+(
+  token_address STRING,
+  from_address STRING,
+  to_address STRING,
+  value DECIMAL(38,0),
+  transaction_hash STRING,
+  block_number BIGINT
 )
-DELETE FROM CTE WHERE RN > 1
+USING delta;
 
--- COMMAND ----------
-
-SELECT * FROM tokens_silver;
-
--- COMMAND ----------
-
-SELECT COUNT(*), COUNT(DISTINCT name), COUNT(DISTINCT address)
-FROM tokens_silver;
+INSERT INTO token_transfers_silver
+  SELECT T.address, TT.from_address, TT.to_address, TT.value, TT.transaction_hash, TT.block_number
+  FROM tokens_silver T, ethereumetl.token_transfers TT
+  WHERE T.address = TT.token_address;
 
 -- COMMAND ----------
 
@@ -73,9 +80,8 @@ FROM tokens_silver;
 -- COMMAND ----------
 
 USE ethereumetl;
-SELECT number, CAST(CAST(timestamp AS TIMESTAMP) AS DATE) AS date 
-FROM blocks 
-WHERE number = (SELECT MAX(number) FROM blocks);
+SELECT MAX(number), MAX(CAST(CAST(timestamp AS TIMESTAMP) AS DATE)) AS date 
+FROM blocks;
 
 -- COMMAND ----------
 
@@ -86,7 +92,8 @@ WHERE number = (SELECT MAX(number) FROM blocks);
 
 USE ethereumetl;
 SELECT MIN(block_number)
-FROM token_transfers;
+FROM token_transfers
+WHERE token_address IN (SELECT address FROM silver_contracts WHERE is_erc20 = True);
 
 -- COMMAND ----------
 
@@ -98,7 +105,8 @@ FROM token_transfers;
 USE ethereumetl;
 
 SELECT COUNT(*)
-FROM contracts C INNER JOIN tokens T ON C.address=T.address;
+FROM silver_contracts
+WHERE is_erc20 = True;
 
 -- COMMAND ----------
 
@@ -107,9 +115,9 @@ FROM contracts C INNER JOIN tokens T ON C.address=T.address;
 
 -- COMMAND ----------
 
--- TODO replace with CASE WHEN to_address is a contract address
 USE ethereumetl;
-SELECT AVG(CASE WHEN to_address='' THEN 1.0 ELSE 0.0 END)*100 AS contractCallPercentage
+
+SELECT ((SELECT COUNT(*) FROM transactions WHERE to_address IN (SELECT address FROM silver_contracts)) / COUNT(*))*100 AS percentage
 FROM transactions;
 
 -- COMMAND ----------
@@ -122,7 +130,7 @@ FROM transactions;
 USE ethereumetl;
 
 SELECT COUNT(*) AS frequency, token_address, name
-FROM (token_transfers LEFT JOIN tokens ON token_address=address)
+FROM (token_transfers INNER JOIN tokens ON token_address=address)
 GROUP BY token_address, name
 ORDER BY COUNT(*) DESC LIMIT 100;
 
@@ -139,9 +147,13 @@ USE ethereumetl;
 SELECT (COUNT(to_address)/SUM(count))*100 AS newAddrPercentage
 FROM (
   SELECT to_address, COUNT(*) AS count
-  FROM token_transfers
+  FROM token_transfers T INNER JOIN silver_contracts C ON T.token_address = C.address
+  WHERE is_erc20 = TRUE
   GROUP BY to_address
 );
+
+-- This gets the number of addresses and divides that by the number of transfers
+-- This works since every to_address listed in token_transfers must have at least one (first) transfer
 
 -- COMMAND ----------
 
@@ -184,7 +196,7 @@ FROM blocks;
 -- COMMAND ----------
 
 USE ethereumetl;
-SELECT (SUM(value)/(1000000000000000000)) AS EtherVolume
+SELECT (SUM(value) + SUM(gas)/(1000000000000000000)) AS EtherVolume
 FROM transactions;
 
 -- COMMAND ----------
@@ -205,14 +217,13 @@ FROM transactions;
 
 -- COMMAND ----------
 
--- TODO CHECK
-
 USE ethereumetl;
 
 SELECT MAX(count)
 FROM (
       SELECT transaction_hash, COUNT(*) AS count
-      FROM token_transfers
+      FROM token_transfers T INNER JOIN silver_contracts C ON T.token_address = C.address
+      WHERE C.is_erc20 = True
       GROUP BY transaction_hash
       );
 
@@ -223,33 +234,87 @@ FROM (
 
 -- COMMAND ----------
 
-SELECT to_address FROM transactions LIMIT 100;
+-- MAGIC %python
+-- MAGIC ! ls /dbfs/mnt/dscc202-datasets/misc/G04/tokenrec/tables | grep "Wallet"
 
 -- COMMAND ----------
 
-SET tmp=${wallet_address};
+USE g04_db;
 
--- COMMAND ----------
+DROP TABLE IF EXISTS eda_erc20_from_addrs;
 
-SELECT number
-FROM blocks
-WHERE CAST(CAST(timestamp AS TIMESTAMP) AS DATE) > CAST('${start_date}' AS DATE)
-ORDER BY timestamp ASC;
+CREATE OR REPLACE TABLE eda_erc20_from_addrs(
+  from_address STRING  
+)
+USING DELTA
+LOCATION '/mnt/dscc202-datasets/misc/G04/tokenrec/tables/';
 
--- COMMAND ----------
 
 USE ethereumetl;
 
---= 0x5df9b87991262f6ba471f09758cde1c0fc1de734;
---SET startDate = str_to_date('2017/01/01', '%Y/%m/%d');
+INSERT INTO g04_db.eda_erc20_from_addrs
+  SELECT DISTINCT from_address
+  FROM token_transfers T INNER JOIN silver_contracts C ON T.token_address = C.address
+  WHERE C.is_erc20 = True;
 
---SELECT from_address, SUM(value) AS sold
---FROM token_transfers
---WHERE from_address = addr AND block_number < (SELECT MIN(number)
---                                              FROM blocks
---                                              WHERE CAST(CAST(timestamp AS TIMESTAMP) AS DATE) > startDate
---                                              )
---GROUP BY from_address;
+-- COMMAND ----------
+
+USE g04_db;
+
+DROP TABLE IF EXISTS g04_db.eda_tok_sold;
+DROP TABLE IF EXISTS g04_db.eda_tok_bought;
+
+CREATE OR REPLACE TABLE g04_db.eda_tok_sold(
+  token_address STRING,
+  amt_sold BIGINT
+)
+USING DELTA
+LOCATION '/mnt/dscc202-datasets/misc/G04/tokenrec/tables/';
+
+CREATE OR REPLACE TABLE g04_db.eda_tok_bought(
+  token_address STRING,
+  amt_bought BIGINT
+)
+USING DELTA
+LOCATION '/mnt/dscc202-datasets/misc/G04/tokenrec/tables/';
+
+
+USE ethereumetl;
+
+INSERT INTO g04_db.eda_tok_sold
+  SELECT token_address, SUM(value/(1000000000000000000))
+  FROM token_transfers
+  WHERE from_address = '${wallet.address}'
+    AND block_number > (SELECT MAX(number)
+                        FROM blocks
+                        WHERE CAST(timestamp AS TIMESTAMP) < CAST('${start.date}' AS TIMESTAMP)
+                       )
+  GROUP BY token_address;
+
+INSERT INTO g04_db.eda_tok_bought
+  SELECT token_address, SUM(value/(1000000000000000000))
+  FROM token_transfers
+  WHERE to_address = '${wallet.address}'
+    AND block_number > (SELECT MAX(number)
+                        FROM blocks
+                        WHERE CAST(timestamp AS TIMESTAMP) < CAST('${start.date}' AS TIMESTAMP)
+                       )
+  GROUP BY token_address;
+
+
+USE g04_db;
+
+SELECT B.token_address, T.name, (B.amt_bought - S.amt_sold) AS curr_balance
+FROM eda_tok_bought B LEFT JOIN eda_tok_sold S ON B.token_address = S.token_address
+      LEFT JOIN tokens_silver T ON T.address = B.token_address;
+      
+-- PLEASE NOTE !!!!
+-- These balance amounts are scaled down by 1000000000000000000 because the BIGINT used to store the
+-- balances in the intermediate tables would overflow if I tried to store the full-precision sum
+
+-- COMMAND ----------
+
+
 
 -- COMMAND ----------
 
