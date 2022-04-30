@@ -28,7 +28,7 @@ print(wallet_address,start_date)
 
 # COMMAND ----------
 
-# Create experiment for group
+# Create/set experiment for group
 MY_EXPERIMENT = "/Users/slogan6@ur.rochester.edu/Final_Project_Experiment"
 mlflow.set_experiment(MY_EXPERIMENT)
 
@@ -43,7 +43,7 @@ print("Lifecycle_stage: {}".format(experiment.lifecycle_stage))
 
 # COMMAND ----------
 
-# Read in triplet data
+# Read in triplet data - wallets is currently a subset of all data
 tripletDF = spark.table('g04_db.wallets').cache() # we may want to store this as a delta table in BASE_DELTA_PATH and read in from there
 
 # COMMAND ----------
@@ -53,6 +53,33 @@ display(tripletDF)
 # COMMAND ----------
 
 # Ensure/fix wallet_hash and token_address are ints
+# We'll need silver tables for converting wallet hashes and token addresses to their respective int so we can get it back at the end
+# For now I'll just do it randomly
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import monotonically_increasing_id 
+from pyspark.sql.functions import sequence
+
+# Get list of unique users
+unique_users = tripletDF.select('wallet_hash').distinct().collect()
+# Create dataframe for wallet hash and unique integer user id
+spark = SparkSession.builder.getOrCreate()
+usersDF = spark.createDataFrame(unique_users)
+usersDF = usersDF.select("*").withColumn("user_int_id", monotonically_increasing_id())
+# Join the integer user id to triplet table
+tripletDF = tripletDF.join(usersDF, "wallet_hash", "inner")
+
+# Get list of unique tokens
+unique_tokens = tripletDF.select('token_address').distinct().collect()
+# Create dataframe for token address and unique integer token id
+spark = SparkSession.builder.getOrCreate()
+tokensDF = spark.createDataFrame(unique_tokens)
+tokensDF = tokensDF.select("*").withColumn("token_int_id", monotonically_increasing_id())
+# Join the integer token id to triplet table
+tripletDF = tripletDF.join(tokensDF, "token_address", "inner")
+
+# COMMAND ----------
+
+display(tripletDF)
 
 # COMMAND ----------
 
