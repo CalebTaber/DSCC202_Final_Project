@@ -8,9 +8,11 @@ CREATE TABLE tokens_silver
   address STRING,
   name STRING,
   symbol STRING,
-  price_usd DOUBLE  
+  price_usd DOUBLE
 )
 USING delta;
+
+-- TODO add index int that can be used in token_transfers_silver to reduce the size?
 
 INSERT INTO tokens_silver
   SELECT DISTINCT TPU.contract_address, TPU.name, TPU.symbol, TPU.price_usd
@@ -30,14 +32,17 @@ CREATE TABLE token_transfers_silver
   to_address STRING,
   value DECIMAL(38,0),
   transaction_hash STRING,
-  block_number BIGINT
+  block_number BIGINT,
+  timestamp TIMESTAMP
 )
 USING delta;
 
+-- TODO can probably drop block_number and transaction_hash
+
 INSERT INTO token_transfers_silver
-  SELECT T.address, TT.from_address, TT.to_address, TT.value, TT.transaction_hash, TT.block_number
-  FROM tokens_silver T, ethereumetl.token_transfers TT
-  WHERE T.address = TT.token_address;
+  SELECT T.address, TT.from_address, TT.to_address, TT.value, TT.transaction_hash, TT.block_number, CAST(B.timestamp AS TIMESTAMP)
+  FROM tokens_silver T, ethereumetl.token_transfers TT, ethereumetl.blocks B
+  WHERE T.address = TT.token_address AND TT.block_number = B.number;
 
 -- COMMAND ----------
 
@@ -234,87 +239,82 @@ FROM (
 
 -- COMMAND ----------
 
--- MAGIC %python
--- MAGIC ! ls /dbfs/mnt/dscc202-datasets/misc/G04/tokenrec/tables | grep "Wallet"
+-- FOR TESTING
+
+USE g04_db;
+
+SELECT from_address, timestamp
+FROM token_transfers_silver
+ORDER BY timestamp DESC;
 
 -- COMMAND ----------
 
 USE g04_db;
 
-DROP TABLE IF EXISTS eda_erc20_from_addrs;
+DROP TABLE IF EXISTS eda_toks_sold;
+DROP TABLE IF EXISTS eda_toks_bought;
+DROP TABLE IF EXISTS eda_tok_trans_abridged;
 
-CREATE OR REPLACE TABLE eda_erc20_from_addrs(
-  from_address STRING  
+CREATE TABLE eda_toks_sold(
+  token_address STRING,
+  amt_sold DECIMAL(38,0)
 )
-USING DELTA
-LOCATION '/mnt/dscc202-datasets/misc/G04/tokenrec/tables/';
+USING DELTA;
 
+CREATE TABLE eda_toks_bought(
+  token_address STRING,
+  amt_bought DECIMAL(38,0)
+)
+USING DELTA;
 
-USE ethereumetl;
-
-INSERT INTO g04_db.eda_erc20_from_addrs
-  SELECT DISTINCT from_address
-  FROM token_transfers T INNER JOIN silver_contracts C ON T.token_address = C.address
-  WHERE C.is_erc20 = True;
+CREATE TABLE eda_tok_trans_abridged(
+  token_address STRING,
+  from_address STRING,
+  to_address STRING,
+  value DECIMAL(38,0),
+  transaction_hash STRING,
+  log_index BIGINT,
+  block_number BIGINT
+)
+USING DELTA;
 
 -- COMMAND ----------
 
-USE g04_db;
-
-DROP TABLE IF EXISTS g04_db.eda_tok_sold;
-DROP TABLE IF EXISTS g04_db.eda_tok_bought;
-
-CREATE OR REPLACE TABLE g04_db.eda_tok_sold(
-  token_address STRING,
-  amt_sold BIGINT
-)
-USING DELTA
-LOCATION '/mnt/dscc202-datasets/misc/G04/tokenrec/tables/';
-
-CREATE OR REPLACE TABLE g04_db.eda_tok_bought(
-  token_address STRING,
-  amt_bought BIGINT
-)
-USING DELTA
-LOCATION '/mnt/dscc202-datasets/misc/G04/tokenrec/tables/';
-
-
 USE ethereumetl;
 
-INSERT INTO g04_db.eda_tok_sold
-  SELECT token_address, SUM(value/(1000000000000000000))
+INSERT INTO g04_db.eda_tok_trans_abridged
+  SELECT token_address, from_address, to_address, value, transaction_hash, log_index, block_number
   FROM token_transfers
+  WHERE block_number > (SELECT MAX(number)
+                        FROM blocks
+                        WHERE CAST(timestamp AS TIMESTAMP) < CAST('${start.date}' AS TIMESTAMP)
+                       );
+
+
+INSERT INTO g04_db.eda_toks_sold
+  SELECT token_address, SUM(value)
+  FROM g04_db.eda_tok_trans_abridged
   WHERE from_address = '${wallet.address}'
-    AND block_number > (SELECT MAX(number)
-                        FROM blocks
-                        WHERE CAST(timestamp AS TIMESTAMP) < CAST('${start.date}' AS TIMESTAMP)
-                       )
   GROUP BY token_address;
 
-INSERT INTO g04_db.eda_tok_bought
-  SELECT token_address, SUM(value/(1000000000000000000))
-  FROM token_transfers
+
+INSERT INTO g04_db.eda_toks_bought
+  SELECT token_address, SUM(value)
+  FROM g04_db.eda_tok_trans_abridged
   WHERE to_address = '${wallet.address}'
-    AND block_number > (SELECT MAX(number)
-                        FROM blocks
-                        WHERE CAST(timestamp AS TIMESTAMP) < CAST('${start.date}' AS TIMESTAMP)
-                       )
   GROUP BY token_address;
-
-
-USE g04_db;
-
-SELECT B.token_address, T.name, (B.amt_bought - S.amt_sold) AS curr_balance
-FROM eda_tok_bought B LEFT JOIN eda_tok_sold S ON B.token_address = S.token_address
-      LEFT JOIN tokens_silver T ON T.address = B.token_address;
-      
--- PLEASE NOTE !!!!
--- These balance amounts are scaled down by 1000000000000000000 because the BIGINT used to store the
--- balances in the intermediate tables would overflow if I tried to store the full-precision sum
 
 -- COMMAND ----------
 
+USE g04_db;
 
+SELECT B.token_address AS Buy_Tok, B.amt_bought, S.token_address AS Sell_Tok, S.amt_sold, (CASE WHEN S.amt_sold IS NULL THEN B.amt_bought ELSE B.amt_bought - S.amt_sold END) AS balance
+FROM eda_toks_bought B FULL OUTER JOIN eda_toks_sold S on B.token_address = S.token_address;
+
+-- Some balances may be negative because the tracking period does not necessarily start from the beginning of time
+
+-- address = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2';
+-- Wrapped Ether (see addr above) is almost always negative
 
 -- COMMAND ----------
 
@@ -325,9 +325,8 @@ FROM eda_tok_bought B LEFT JOIN eda_tok_sold S ON B.token_address = S.token_addr
 
 USE ethereumetl;
 
-SELECT CAST(CAST(timestamp AS TIMESTAMP) AS DATE) AS date, transaction_count
-FROM blocks
-WHERE transaction_count > 0;
+SELECT CAST(timestamp AS TIMESTAMP) AS timestamp, transaction_count
+FROM blocks;
 
 -- COMMAND ----------
 
