@@ -56,15 +56,16 @@ display(tripletDF)
 # We'll need silver tables for converting wallet hashes and token addresses to their respective int so we can get it back at the end
 # For now I'll just do it randomly
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import monotonically_increasing_id 
+from pyspark.sql.functions import row_number
 from pyspark.sql.functions import sequence
+from pyspark.sql.window import Window
 
 # Get list of unique users
 unique_users = tripletDF.select('wallet_hash').distinct().collect()
 # Create dataframe for wallet hash and unique integer user id
 spark = SparkSession.builder.getOrCreate()
 usersDF = spark.createDataFrame(unique_users)
-usersDF = usersDF.select("*").withColumn("user_int_id", monotonically_increasing_id())
+usersDF = usersDF.select("*").withColumn("user_int_id", row_number().over(Window.partitionBy().orderBy(usersDF['wallet_hash'])))
 # Join the integer user id to triplet table
 tripletDF = tripletDF.join(usersDF, "wallet_hash", "inner")
 
@@ -73,7 +74,7 @@ unique_tokens = tripletDF.select('token_address').distinct().collect()
 # Create dataframe for token address and unique integer token id
 spark = SparkSession.builder.getOrCreate()
 tokensDF = spark.createDataFrame(unique_tokens)
-tokensDF = tokensDF.select("*").withColumn("token_int_id", monotonically_increasing_id())
+tokensDF = tokensDF.select("*").withColumn("token_int_id", row_number().over(Window.partitionBy().orderBy(tokensDF['token_address'])))
 # Join the integer token id to triplet table
 tripletDF = tripletDF.join(tokensDF, "token_address", "inner")
 
@@ -83,9 +84,33 @@ display(tripletDF)
 
 # COMMAND ----------
 
+# Drop na in active holding column
+tripletDF = tripletDF.dropna(how="any", subset="active_holding_usd")
+
+# COMMAND ----------
+
+display(tripletDF)
+
+# COMMAND ----------
+
+# Ensure rating is cast to float
+tripletDF = tripletDF.withColumn("active_holding_usd", tripletDF["active_holding_usd"].cast(DoubleType()))
+
+# COMMAND ----------
+
+# (Take out once active_holding is all set) 
+# make active holding positive
+tripletDF = tripletDF.withColumn('active_holding_usd', abs(tripletDF.active_holding_usd))
+# Most of the ratings need to not be 0 to train als
+tripletDF = tripletDF.where("active_holding_usd!=0")
+# drop duplicates
+tripletDF = tripletDF.dropDuplicates(['user_int_id', 'token_int_id'])
+
+# COMMAND ----------
+
 # Split data
 seed = 42
-(split_60_df, split_a_20_df, split_b_20_df) = self.tripletDF.randomSplit([0.6, 0.2, 0.2], seed = seed)
+(split_60_df, split_a_20_df, split_b_20_df) = tripletDF.randomSplit([0.6, 0.2, 0.2], seed = seed)
 # Let's cache these datasets for performance
 training_df = split_60_df.cache()
 validation_df = split_a_20_df.cache()
@@ -93,21 +118,69 @@ test_df = split_b_20_df.cache()
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC Trying to fit a single ALS model first
+
+# COMMAND ----------
+
 # Initialize ALS model
 from pyspark.ml.recommendation import ALS
 als = ALS()
+als.setMaxIter(5)\
+   .setSeed(seed)\
+   .setItemCol("token_int_id")\
+   .setRatingCol("active_holding_usd")\
+   .setUserCol("user_int_id")\
+   .setColdStartStrategy("drop")
+
+# COMMAND ----------
+
+# Set params
+als.setParams(rank = 3, regParam = 1.0)
+
+# COMMAND ----------
+
+# Fit model (not yet working)
+history = als.fit(training_df)
+
+# COMMAND ----------
+
+# Test model
+predict_df = als.transform(validation_df)
+predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
+
+# Evaluate using RSME (fix this)
+reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="Plays", metricName="rmse")
+test_RMSE = reg_eval.evaluate(predicted_test_df)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Fit models using Hyperopt
+
+# COMMAND ----------
+
+# Function to train ALS (needs to return model and score)
+# def train_ALS(regParam, rank):
+#    with mlflow.start_run(nested=True):
+# insert above code once working
 
 # COMMAND ----------
 
 # Hyperopt for hyperparameter tuning
 from hyperopt import fmin, hp, tpe, STATUS_OK, SparkTrials
-# ...
-# def run_and_fit_model():
+
+# def train_with_hyperopt(params):
+#     regParam = int(params['regParam'])
+#     rank = int(params['rank'])
+#     model, rsme = train_ALS(regParam, rank)
+#     return {'rsme': rsme, 'status': STATUS_OK}
 
 # COMMAND ----------
 
 # Define hyperopt search space
-space = # ... {}
+space = {'regParam': hp.uniform('regParam', 0.1, 0.3),
+        'rank': hp.uniform('rank', 4, 16)}
 
 # COMMAND ----------
 
@@ -118,10 +191,10 @@ spark_trials = SparkTrials()
 
 # Run hyperopt with mlflow - does hyperopt log params and some metrics?
 # with mlflow.start_run():
-#     best_hyperparam = fmin(fn=# ..., 
+#     best_hyperparam = fmin(fn=train_with_hyperopt, 
 #                          space=space, 
 #                          algo=tpe.suggest, 
-#                          max_evals=30, 
+#                          max_evals=10, 
 #                          trials=spark_trials)
 
 # COMMAND ----------
