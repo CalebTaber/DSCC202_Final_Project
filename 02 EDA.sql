@@ -1,51 +1,4 @@
 -- Databricks notebook source
-USE g04_db;
-
-DROP TABLE IF EXISTS tokens_silver;
-
-CREATE TABLE tokens_silver
-(
-  address STRING,
-  name STRING,
-  symbol STRING,
-  price_usd DOUBLE
-)
-USING delta;
-
--- TODO add index int that can be used in token_transfers_silver to reduce the size?
-
-INSERT INTO tokens_silver
-  SELECT DISTINCT TPU.contract_address, TPU.name, TPU.symbol, TPU.price_usd
-  FROM ethereumetl.token_prices_usd TPU INNER JOIN ethereumetl.tokens T ON contract_address=address
-    WHERE asset_platform_id = 'ethereum' AND price_usd > 0.0;
-
--- COMMAND ----------
-
-USE g04_db;
-
-DROP TABLE IF EXISTS token_transfers_silver;
-
-CREATE TABLE token_transfers_silver
-(
-  token_address STRING,
-  from_address STRING,
-  to_address STRING,
-  value DECIMAL(38,0),
-  transaction_hash STRING,
-  block_number BIGINT,
-  timestamp TIMESTAMP
-)
-USING delta;
-
--- TODO can probably drop block_number and transaction_hash
-
-INSERT INTO token_transfers_silver
-  SELECT T.address, TT.from_address, TT.to_address, TT.value, TT.transaction_hash, TT.block_number, CAST(B.timestamp AS TIMESTAMP)
-  FROM tokens_silver T, ethereumetl.token_transfers TT, ethereumetl.blocks B
-  WHERE T.address = TT.token_address AND TT.block_number = B.number;
-
--- COMMAND ----------
-
 -- MAGIC %md
 -- MAGIC ## Ethereum Blockchain Data Analysis - <a href=https://github.com/blockchain-etl/ethereum-etl-airflow/tree/master/dags/resources/stages/raw/schemas>Table Schemas</a>
 -- MAGIC - **Transactions** - Each block in the blockchain is composed of zero or more transactions. Each transaction has a source address, a target address, an amount of Ether transferred, and an array of input bytes. This table contains a set of all transactions from all blocks, and contains a block identifier to get associated block-specific information associated with each transaction.
@@ -251,21 +204,7 @@ ORDER BY timestamp DESC;
 
 USE g04_db;
 
-DROP TABLE IF EXISTS eda_toks_sold;
-DROP TABLE IF EXISTS eda_toks_bought;
 DROP TABLE IF EXISTS eda_tok_trans_abridged;
-
-CREATE TABLE eda_toks_sold(
-  token_address STRING,
-  amt_sold DECIMAL(38,0)
-)
-USING DELTA;
-
-CREATE TABLE eda_toks_bought(
-  token_address STRING,
-  amt_bought DECIMAL(38,0)
-)
-USING DELTA;
 
 CREATE TABLE eda_tok_trans_abridged(
   token_address STRING,
@@ -278,28 +217,48 @@ CREATE TABLE eda_tok_trans_abridged(
 )
 USING DELTA;
 
--- COMMAND ----------
-
-USE ethereumetl;
-
-INSERT INTO g04_db.eda_tok_trans_abridged
+INSERT INTO eda_tok_trans_abridged
   SELECT token_address, from_address, to_address, value, transaction_hash, log_index, block_number
-  FROM token_transfers
+  FROM ethereumetl.token_transfers
   WHERE block_number > (SELECT MAX(number)
-                        FROM blocks
+                        FROM ethereumetl.blocks
                         WHERE CAST(timestamp AS TIMESTAMP) < CAST('${start.date}' AS TIMESTAMP)
                        );
 
+-- COMMAND ----------
 
-INSERT INTO g04_db.eda_toks_sold
+USE g04_db;
+
+DROP TABLE IF EXISTS eda_toks_sold;
+
+CREATE TABLE eda_toks_sold(
+  token_address STRING,
+  amt_sold DECIMAL(38,0)
+)
+USING DELTA;
+
+INSERT INTO eda_toks_sold
   SELECT token_address, SUM(value)
+--  FROM ethereumetl.token_transfers
   FROM g04_db.eda_tok_trans_abridged
   WHERE from_address = '${wallet.address}'
   GROUP BY token_address;
 
+-- COMMAND ----------
+
+USE g04_db;
+
+DROP TABLE IF EXISTS eda_toks_bought;
+
+CREATE TABLE eda_toks_bought(
+  token_address STRING,
+  amt_bought DECIMAL(38,0)
+)
+USING DELTA;
 
 INSERT INTO g04_db.eda_toks_bought
   SELECT token_address, SUM(value)
+--  FROM ethereumetl.token_transfers
   FROM g04_db.eda_tok_trans_abridged
   WHERE to_address = '${wallet.address}'
   GROUP BY token_address;
@@ -308,7 +267,13 @@ INSERT INTO g04_db.eda_toks_bought
 
 USE g04_db;
 
-SELECT B.token_address AS Buy_Tok, B.amt_bought, S.token_address AS Sell_Tok, S.amt_sold, (CASE WHEN S.amt_sold IS NULL THEN B.amt_bought ELSE B.amt_bought - S.amt_sold END) AS balance
+SELECT B.token_address AS Buy_Tok,
+       B.amt_bought,
+       S.token_address AS Sell_Tok,
+       S.amt_sold,
+       (CASE WHEN S.amt_sold IS NULL THEN B.amt_bought 
+             WHEN B.amt_bought IS NULL THEN -S.amt_sold
+        ELSE B.amt_bought - S.amt_sold END) AS balance
 FROM eda_toks_bought B FULL OUTER JOIN eda_toks_sold S on B.token_address = S.token_address;
 
 -- Some balances may be negative because the tracking period does not necessarily start from the beginning of time
