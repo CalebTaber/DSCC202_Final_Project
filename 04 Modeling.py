@@ -136,22 +136,24 @@ als.setMaxIter(5)\
 # COMMAND ----------
 
 # Set params
-als.setParams(rank = 3, regParam = 1.0)
+als.setParams(rank = 2, regParam = 0.1)
 
 # COMMAND ----------
 
-# Fit model (not yet working)
+# Fit model (not yet working - needs enough data to work)
 history = als.fit(training_df)
 
 # COMMAND ----------
 
 # Test model
 predict_df = als.transform(validation_df)
+
+# Remove nan's from prediction
 predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
 
-# Evaluate using RSME (fix this)
-reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="Plays", metricName="rmse")
-test_RMSE = reg_eval.evaluate(predicted_test_df)
+# Evaluate using RSME
+reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse") # make sure these column names are correct
+error = reg_eval.evaluate(predicted_test_df)
 
 # COMMAND ----------
 
@@ -161,20 +163,50 @@ test_RMSE = reg_eval.evaluate(predicted_test_df)
 # COMMAND ----------
 
 # Function to train ALS (needs to return model and score)
-# def train_ALS(regParam, rank):
-#    with mlflow.start_run(nested=True):
-# insert above code once working
+from pyspark.ml.recommendation import ALS
+def train_ALS(regParam, rank):
+    with mlflow.start_run(nested=True):
+        # insert above code once working
+        # Instantiate model
+        als = ALS()
+        als.setMaxIter(5)\
+           .setSeed(seed)\
+           .setItemCol("token_int_id")\
+           .setRatingCol("active_holding_usd")\
+           .setUserCol("user_int_id")\
+           .setColdStartStrategy("drop")
+        als.setParams(rank = rank, regParam = regParam)
+        
+        # Fit model to training data
+        als.fit(training_df)
+        
+        # Evaluate model
+        predict_df = als.transform(validation_df)
+        # Remove nan's from prediction
+        predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
+        # Evaluate using RSME
+        reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse")
+        error = reg_eval.evaluate(predicted_test_df)      
+        
+        # Log evaluation metric
+        mlflow.log_metric("rsme", error)
+        
+    return als, error
+
+# COMMAND ----------
+
+# Test that train_ALS() function works
 
 # COMMAND ----------
 
 # Hyperopt for hyperparameter tuning
 from hyperopt import fmin, hp, tpe, STATUS_OK, SparkTrials
 
-# def train_with_hyperopt(params):
-#     regParam = int(params['regParam'])
-#     rank = int(params['rank'])
-#     model, rsme = train_ALS(regParam, rank)
-#     return {'rsme': rsme, 'status': STATUS_OK}
+def train_with_hyperopt(params):
+    regParam = float(params['regParam'])
+    rank = int(params['rank'])
+    model, rsme = train_ALS(regParam, rank)
+    return {'rsme': rsme, 'status': STATUS_OK}
 
 # COMMAND ----------
 
@@ -184,18 +216,13 @@ space = {'regParam': hp.uniform('regParam', 0.1, 0.3),
 
 # COMMAND ----------
 
-# Create spark trials object for hyperopt
-spark_trials = SparkTrials()
-
-# COMMAND ----------
-
 # Run hyperopt with mlflow - does hyperopt log params and some metrics?
-# with mlflow.start_run():
-#     best_hyperparam = fmin(fn=train_with_hyperopt, 
-#                          space=space, 
-#                          algo=tpe.suggest, 
-#                          max_evals=10, 
-#                          trials=spark_trials)
+# took out trials=spark_trials because https://docs.databricks.com/_static/notebooks/hyperopt-spark-ml.html says to
+with mlflow.start_run():
+    best_hyperparam = fmin(fn=train_with_hyperopt, 
+                         space=space, 
+                         algo=tpe.suggest, 
+                         max_evals=10)
 
 # COMMAND ----------
 
@@ -203,6 +230,7 @@ spark_trials = SparkTrials()
 import hyperopt
 
 print(hyperopt.space_eval(space, best_hyperparam))
+print(best_hyperparam)
 
 # COMMAND ----------
 
