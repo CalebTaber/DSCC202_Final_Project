@@ -141,12 +141,12 @@ als.setParams(rank = 2, regParam = 0.1)
 # COMMAND ----------
 
 # Fit model (not yet working - needs enough data to work)
-history = als.fit(training_df)
+model = als.fit(training_df)
 
 # COMMAND ----------
 
 # Test model
-predict_df = als.transform(validation_df)
+predict_df = model.transform(validation_df)
 
 # Remove nan's from prediction
 predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
@@ -164,6 +164,8 @@ error = reg_eval.evaluate(predicted_test_df)
 
 # Function to train ALS (needs to return model and score)
 from pyspark.ml.recommendation import ALS
+from pyspark.ml.evaluation import RegressionEvaluator
+
 def train_ALS(regParam, rank):
     with mlflow.start_run(nested=True):
         # insert above code once working
@@ -178,10 +180,10 @@ def train_ALS(regParam, rank):
         als.setParams(rank = rank, regParam = regParam)
         
         # Fit model to training data
-        als.fit(training_df)
+        model = als.fit(training_df)
         
         # Evaluate model
-        predict_df = als.transform(validation_df)
+        predict_df = model.transform(validation_df)
         # Remove nan's from prediction
         predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
         # Evaluate using RSME
