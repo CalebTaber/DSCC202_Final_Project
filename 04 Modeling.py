@@ -75,17 +75,6 @@ tripletDF = tripletDF.withColumn("active_holding_usd", tripletDF["active_holding
 
 # COMMAND ----------
 
-# (Take out once active_holding is all set) 
-# make active holding positive
-#tripletDF = tripletDF.withColumn('active_holding_usd', abs(tripletDF.active_holding_usd))
-# Most of the ratings need to not be 0 to train als
-#tripletDF = tripletDF.where("active_holding_usd!=0")
-tripletDF = tripletDF.where("active_holding_usd>0")
-# drop duplicates
-#tripletDF = tripletDF.dropDuplicates(['user_int_id', 'token_int_id'])
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC Training
 
@@ -115,13 +104,6 @@ als.setSeed(seed)\
    .setItemCol("token_int_id")\
    .setRatingCol("active_holding_usd")\
    .setUserCol("user_int_id")
-
-# als.setMaxIter(10)\
-#    .setSeed(seed)\
-#    .setItemCol("token_int_id")\
-#    .setRatingCol("active_holding_usd")\
-#    .setUserCol("user_int_id")\
-#    .setColdStartStrategy("drop")
 
 # COMMAND ----------
 
@@ -205,11 +187,6 @@ def train_ALS(rank, regParam):
 
 # COMMAND ----------
 
-# Test that train_ALS() function works
-train_ALS(2, 0.2)
-
-# COMMAND ----------
-
 # Hyperopt for hyperparameter tuning
 from hyperopt import fmin, hp, tpe, STATUS_OK, SparkTrials
 
@@ -227,8 +204,7 @@ space = {'rank': hp.choice('rank', [2, 3, 4]),
 
 # COMMAND ----------
 
-# Run hyperopt with mlflow - does hyperopt log params and some metrics?
-# took out trials=spark_trials because https://docs.databricks.com/_static/notebooks/hyperopt-spark-ml.html says to
+# Run hyperopt with mlflow
 best_hyperparam = fmin(fn=train_with_hyperopt, 
                          space=space, 
                          algo=tpe.suggest, 
