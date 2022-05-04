@@ -160,22 +160,35 @@ error
 # Function to train ALS (needs to return model and score)
 from pyspark.ml.recommendation import ALS
 from pyspark.ml.evaluation import RegressionEvaluator
+from mlflow.models.signature import ModelSignature
+from mlflow.types.schema import Schema, ColSpec
 
-def train_ALS(regParam, rank):
-    with mlflow.start_run(nested=True):
-        # insert above code once working
+def train_ALS(rank, regParam):
+    # setup the schema for the model
+    input_schema = Schema([
+      ColSpec("integer", "user_int_id"),
+      ColSpec("integer", "token_int_id"),
+    ])
+    output_schema = Schema([ColSpec("double")])
+    signature = ModelSignature(inputs=input_schema, outputs=output_schema)
+    
+    with mlflow.start_run(nested=True, run_name="ALS") as run:
+        mlflow.set_tags({"group": 'G04', "class": "DSCC202-402"})
+        mlflow.log_params({"rank": rank, "regParam": regParam})
         # Instantiate model
-        als = ALS()
-        als.setMaxIter(5)\
-           .setSeed(seed)\
+        als = ALS(nonnegative = True)
+        als.setSeed(42)\
            .setItemCol("token_int_id")\
            .setRatingCol("active_holding_usd")\
-           .setUserCol("user_int_id")\
-           .setColdStartStrategy("drop")
+           .setUserCol("user_int_id")
         als.setParams(rank = rank, regParam = regParam)
         
         # Fit model to training data
         model = als.fit(training_df)
+        
+        # Log model
+        mlflow.spark.log_model(spark_model=model, signature = signature,
+                             artifact_path='als-model', registered_model_name="ALS")
         
         # Evaluate model
         predict_df = model.transform(validation_df)
@@ -193,6 +206,7 @@ def train_ALS(regParam, rank):
 # COMMAND ----------
 
 # Test that train_ALS() function works
+train_ALS(2, 0.2)
 
 # COMMAND ----------
 
@@ -202,24 +216,23 @@ from hyperopt import fmin, hp, tpe, STATUS_OK, SparkTrials
 def train_with_hyperopt(params):
     regParam = float(params['regParam'])
     rank = int(params['rank'])
-    model, rsme = train_ALS(regParam, rank)
+    model, rsme = train_ALS(rank, regParam)
     return {'rsme': rsme, 'status': STATUS_OK}
 
 # COMMAND ----------
 
 # Define hyperopt search space
-space = {'regParam': hp.uniform('regParam', 0.1, 0.3),
-        'rank': hp.uniform('rank', 4, 16)}
+space = {'rank': hp.choice('rank', [2, 3, 4]), 
+         'regParam': hp.choice('regParam', [0.1, 0.2, 0.3])}
 
 # COMMAND ----------
 
 # Run hyperopt with mlflow - does hyperopt log params and some metrics?
 # took out trials=spark_trials because https://docs.databricks.com/_static/notebooks/hyperopt-spark-ml.html says to
-with mlflow.start_run():
-    best_hyperparam = fmin(fn=train_with_hyperopt, 
+best_hyperparam = fmin(fn=train_with_hyperopt, 
                          space=space, 
                          algo=tpe.suggest, 
-                         max_evals=10)
+                         max_evals=1) #?
 
 # COMMAND ----------
 
@@ -237,33 +250,78 @@ print(best_hyperparam)
 # COMMAND ----------
 
 # Register model in Staging - copied from MusicRecommenderClass
+from mlflow.tracking import MlflowClient
 client = MlflowClient()
 model_versions = []
 
 # Transition this model to staging and archive the current staging model if there is one
-for mv in client.search_model_versions(f"name='{self.modelName}'"):
+filter_string = "run_id='{}'".format('b5fb0e0bf2f84353a9ee71541eac98b7') # run id
+for mv in client.search_model_versions(filter_string):
     model_versions.append(dict(mv)['version'])
     if dict(mv)['current_stage'] == 'Staging':
-    print("Archiving: {}".format(dict(mv)))
-    # Archive the currently staged model
-    client.transition_model_version_stage(
-        name=self.modelName,
-        version=dict(mv)['version'],
-        stage="Archived"
-        )
+        print("Archiving: {}".format(dict(mv)))
+        # Archive the currently staged model
+        client.transition_model_version_stage(
+            name="ALS model",
+            version=dict(mv)['version'],
+            stage="Archived"
+            )
 client.transition_model_version_stage(
-    name=self.modelName,
+    name="ALS",
     version=model_versions[0],  # this model (current build)
     stage="Staging"
 )
 
 # COMMAND ----------
 
+filter_string = "run_id='{}'".format('b5fb0e0bf2f84353a9ee71541eac98b7')
+for mv in client.search_model_versions(filter_string):
+    print("name={}; run_id={}; version={}".format(mv.name, mv.run_id, mv.version))
+
+# COMMAND ----------
+
 # Test model in Staging
+# Evaluate model
+predict_df = mlflow.spark.load_model('models:/'+"ALS"+'/Staging').stages[0].transform(test_df)
+# Remove nan's from prediction
+predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
+# Evaluate using RSME
+reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse")
+error = reg_eval.evaluate(predicted_test_df)      
+
+# COMMAND ----------
+
+error
 
 # COMMAND ----------
 
 # Create a dataframe for best model that will be used for predictions/recommendations
+# Predict for a user  
+tokensDF = spark.table("g04_db.toks_silver").cache()
+addressesDF = spark.table("g04_db.wallet_addrs").cache() 
+UserID = addressesDF[addressesDF['addr']==wallet_address].collect()[0][1] 
+# UserID = 9918074 
+users_tokens = tripletDF.filter(tripletDF.user_int_id == UserID).join(tokensDF, tokensDF.id==tripletDF.token_int_id).select('token_int_id', 'name', 'symbol')                                           
+# generate list of tokens held 
+tokens_held_list = [] 
+for tok in users_tokens.collect():   
+    tokens_held_list.append(tok['name'])  
+print('Tokens user has held:') 
+users_tokens.select('name').show()  
+    
+# generate dataframe of tokens user doesn't have 
+tokens_not_held = tripletDF.filter(~ tripletDF['token_int_id'].isin([token['token_int_id'] for token in users_tokens.collect()])) \                                                     .select('token_int_id').withColumn('user_int_id', F.l
+
+# COMMAND ----------
+
+# Print prediction output
+print('Predicted Tokens:')
+predicted_toks.join(tripletDF, 'token_int_id') \
+                 .join(tokensDF, tokensDF.id==tripletDF.token_int_id) \
+                 .select('name', 'symbol') \
+                 .distinct() \
+                 .orderBy('prediction', ascending = False) \
+                 .show(10)
 
 # COMMAND ----------
 
