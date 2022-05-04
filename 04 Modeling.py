@@ -44,7 +44,11 @@ print("Lifecycle_stage: {}".format(experiment.lifecycle_stage))
 # COMMAND ----------
 
 # Read in triplet data - wallets is currently a subset of all data
-tripletDF = spark.table('g04_db.wallets').cache() # we may want to store this as a delta table in BASE_DELTA_PATH and read in from there
+tripletDF = spark.table('g04_db.triple').cache() # we may want to store this as a delta table in BASE_DELTA_PATH and read in from there
+
+# COMMAND ----------
+
+tripletDF.count()
 
 # COMMAND ----------
 
@@ -52,44 +56,17 @@ display(tripletDF)
 
 # COMMAND ----------
 
-# Ensure/fix wallet_hash and token_address are ints
-# We'll need silver tables for converting wallet hashes and token addresses to their respective int so we can get it back at the end
-# For now I'll just do it randomly
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import row_number
-from pyspark.sql.functions import sequence
-from pyspark.sql.window import Window
-
-# Get list of unique users
-unique_users = tripletDF.select('wallet_hash').distinct().collect()
-# Create dataframe for wallet hash and unique integer user id
-spark = SparkSession.builder.getOrCreate()
-usersDF = spark.createDataFrame(unique_users)
-usersDF = usersDF.select("*").withColumn("user_int_id", row_number().over(Window.partitionBy().orderBy(usersDF['wallet_hash'])))
-# Join the integer user id to triplet table
-tripletDF = tripletDF.join(usersDF, "wallet_hash", "inner")
-
-# Get list of unique tokens
-unique_tokens = tripletDF.select('token_address').distinct().collect()
-# Create dataframe for token address and unique integer token id
-spark = SparkSession.builder.getOrCreate()
-tokensDF = spark.createDataFrame(unique_tokens)
-tokensDF = tokensDF.select("*").withColumn("token_int_id", row_number().over(Window.partitionBy().orderBy(tokensDF['token_address'])))
-# Join the integer token id to triplet table
-tripletDF = tripletDF.join(tokensDF, "token_address", "inner")
+tripletDF = tripletDF.withColumnRenamed("addr_id", "user_int_id").withColumnRenamed("tok_id", "token_int_id").withColumnRenamed("bal_usd", "active_holding_usd")
 
 # COMMAND ----------
 
-display(tripletDF)
+# Check for nulls
+tripletDF.select([count(when(isnan(c) | col(c).isNull(), c)).alias(c) for c in tripletDF.columns]).show()
 
 # COMMAND ----------
 
 # Drop na in active holding column
 tripletDF = tripletDF.dropna(how="any", subset="active_holding_usd")
-
-# COMMAND ----------
-
-display(tripletDF)
 
 # COMMAND ----------
 
@@ -100,11 +77,17 @@ tripletDF = tripletDF.withColumn("active_holding_usd", tripletDF["active_holding
 
 # (Take out once active_holding is all set) 
 # make active holding positive
-tripletDF = tripletDF.withColumn('active_holding_usd', abs(tripletDF.active_holding_usd))
+#tripletDF = tripletDF.withColumn('active_holding_usd', abs(tripletDF.active_holding_usd))
 # Most of the ratings need to not be 0 to train als
-tripletDF = tripletDF.where("active_holding_usd!=0")
+#tripletDF = tripletDF.where("active_holding_usd!=0")
+tripletDF = tripletDF.where("active_holding_usd>0")
 # drop duplicates
-tripletDF = tripletDF.dropDuplicates(['user_int_id', 'token_int_id'])
+#tripletDF = tripletDF.dropDuplicates(['user_int_id', 'token_int_id'])
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Training
 
 # COMMAND ----------
 
@@ -125,18 +108,25 @@ test_df = split_b_20_df.cache()
 
 # Initialize ALS model
 from pyspark.ml.recommendation import ALS
-als = ALS()
-als.setMaxIter(5)\
-   .setSeed(seed)\
+seed=42
+als = ALS(nonnegative = True)
+
+als.setSeed(seed)\
    .setItemCol("token_int_id")\
    .setRatingCol("active_holding_usd")\
-   .setUserCol("user_int_id")\
-   .setColdStartStrategy("drop")
+   .setUserCol("user_int_id")
+
+# als.setMaxIter(10)\
+#    .setSeed(seed)\
+#    .setItemCol("token_int_id")\
+#    .setRatingCol("active_holding_usd")\
+#    .setUserCol("user_int_id")\
+#    .setColdStartStrategy("drop")
 
 # COMMAND ----------
 
 # Set params
-als.setParams(rank = 2, regParam = 0.1)
+als.setParams(rank = 2, regParam = 0.2)
 
 # COMMAND ----------
 
@@ -152,8 +142,13 @@ predict_df = model.transform(validation_df)
 predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
 
 # Evaluate using RSME
+from pyspark.ml.evaluation import RegressionEvaluator
 reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse") # make sure these column names are correct
 error = reg_eval.evaluate(predicted_test_df)
+
+# COMMAND ----------
+
+error
 
 # COMMAND ----------
 
@@ -241,7 +236,26 @@ print(best_hyperparam)
 
 # COMMAND ----------
 
-# Register model in Staging
+# Register model in Staging - copied from MusicRecommenderClass
+client = MlflowClient()
+model_versions = []
+
+# Transition this model to staging and archive the current staging model if there is one
+for mv in client.search_model_versions(f"name='{self.modelName}'"):
+    model_versions.append(dict(mv)['version'])
+    if dict(mv)['current_stage'] == 'Staging':
+    print("Archiving: {}".format(dict(mv)))
+    # Archive the currently staged model
+    client.transition_model_version_stage(
+        name=self.modelName,
+        version=dict(mv)['version'],
+        stage="Archived"
+        )
+client.transition_model_version_stage(
+    name=self.modelName,
+    version=model_versions[0],  # this model (current build)
+    stage="Staging"
+)
 
 # COMMAND ----------
 
