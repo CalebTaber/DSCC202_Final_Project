@@ -75,11 +75,6 @@ tripletDF = tripletDF.withColumn("active_holding_usd", tripletDF["active_holding
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC Training
-
-# COMMAND ----------
-
 # Split data
 seed = 42
 (split_60_df, split_a_20_df, split_b_20_df) = tripletDF.randomSplit([0.6, 0.2, 0.2], seed = seed)
@@ -91,7 +86,7 @@ test_df = split_b_20_df.cache()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Trying to fit a single ALS model first
+# MAGIC Fit ALS model using grid search
 
 # COMMAND ----------
 
@@ -166,24 +161,13 @@ print( 'The best model was trained with regularization parameter %s' % regParams
 print( 'The best model was trained with rank %s' % ranks[best_params[1]])
 my_model = models[best_params[0]][best_params[1]]
 
-
 # COMMAND ----------
 
 predicted_plays_df.show(10)
 
 # COMMAND ----------
 
-# Set params
-als.setParams(rank = 2, regParam = 0.2)
-
-# COMMAND ----------
-
-# Fit model
-model = als.fit(training_df)
-
-# COMMAND ----------
-
-# # Test model
+# Test model
 predict_df = model.transform(validation_df)
 
 # Remove nan's from prediction
@@ -205,103 +189,7 @@ error
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Fit models using Hyperopt
-
-# COMMAND ----------
-
-# Function to train ALS
-from pyspark.ml.recommendation import ALS
-from pyspark.ml.evaluation import RegressionEvaluator
-from mlflow.models.signature import ModelSignature
-from mlflow.types.schema import Schema, ColSpec
-
-def train_ALS(rank, regParam, alpha):
-    # setup the schema for the model
-    input_schema = Schema([
-      ColSpec("integer", "user_int_id"),
-      ColSpec("integer", "token_int_id"),
-    ])
-    output_schema = Schema([ColSpec("double")])
-    signature = ModelSignature(inputs=input_schema, outputs=output_schema)
-    
-    with mlflow.start_run(nested=True, run_name="ALS") as run:
-        mlflow.set_tags({"group": 'G04', "class": "DSCC202-402"})
-        mlflow.log_params({"rank": rank, "regParam": regParam, "alpha": alpha})
-        # Instantiate model
-        als = ALS(nonnegative = True)
-        als.setSeed(42)\
-           .setItemCol("token_int_id")\
-           .setRatingCol("active_holding_usd")\
-           .setUserCol("user_int_id")
-        als.setParams(rank = rank, regParam = regParam, alpha = alpha)
-        
-        # Fit model to training data
-        model = als.fit(training_df)
-        
-        # Log model
-        mlflow.spark.log_model(spark_model=model, signature = signature,
-                             artifact_path='als-model', registered_model_name="ALS")
-        
-        # Evaluate model
-        reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse")
-        predict_df = model.transform(validation_df)
-        # Remove nan's from prediction
-        predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
-        # Evaluate using RSME
-        error = reg_eval.evaluate(predicted_test_df)      
-        
-        # Log evaluation metric
-        mlflow.log_metric("rsme", error)
-        run_id = run.info.run_id
-        
-    return als, error, run_id
-
-# COMMAND ----------
-
-# Hyperopt for hyperparameter tuning
-from hyperopt import fmin, hp, tpe, STATUS_OK, SparkTrials
-
-def train_with_hyperopt(params):
-    rank = int(params['rank'])
-    regParam = float(params['regParam'])
-    alpha = float(params['alpha'])
-    model, rsme, run_id = train_ALS(rank, regParam, alpha)
-    return {'loss': rsme, 'status': STATUS_OK}
-
-# COMMAND ----------
-
-# Define hyperopt search space
-space = {'rank': hp.choice('rank', [2, 3, 4]), 
-         'regParam': hp.uniform('regParam', 0.1, 0.5), 
-         'alpha': hp.uniform('alpha', 1.0, 5.0)}
-
-# COMMAND ----------
-
-# Run hyperopt with mlflow
-with mlflow.start_run():
-    best_hyperparam = fmin(fn=train_with_hyperopt, 
-                         space=space, 
-                         algo=tpe.suggest, 
-                         max_evals=2)
-
-# COMMAND ----------
-
-# Use hyperopt to get best params for model
-best_params = hyperopt.space_eval(space, best_hyperparam)
-print(best_params)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Retrain model using best params and push to staging
-
-# COMMAND ----------
-
-best_rank = int(best_params['rank'])
-best_regParam = float(best_params['regParam'])
-best_alpha = float(best_params['alpha'])
- 
-final_model, error, run_id = train_ALS(best_rank, best_regParam, best_alpha)
+# MAGIC ## Push best model to staging
 
 # COMMAND ----------
 
@@ -311,7 +199,7 @@ client = MlflowClient()
 model_versions = []
 
 # Transition this model to staging and archive the current staging model if there is one
-model_run = run_id
+model_run = run_id # insert run id here
 filter_string = "run_id='{}'".format(model_run)
 for mv in client.search_model_versions(filter_string):
     model_versions.append(dict(mv)['version'])
