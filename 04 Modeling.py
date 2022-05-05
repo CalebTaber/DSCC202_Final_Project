@@ -29,13 +29,13 @@ print(wallet_address,start_date)
 # COMMAND ----------
 
 # Create/set experiment for group
-MY_EXPERIMENT = "/Users/apatil7@ur.rochester.edu/Final_Project_Experiment"
+MY_EXPERIMENT = "/Users/slogan6@ur.rochester.edu/Final_Project_Experiment"
 mlflow.set_experiment(MY_EXPERIMENT)
 
 # COMMAND ----------
 
 # Check experiment
-experiment = mlflow.get_experiment_by_name("/Users/apatil7@ur.rochester.edu/Final_Project_Experiment")
+experiment = mlflow.get_experiment_by_name("/Users/slogan6@ur.rochester.edu/Final_Project_Experiment")
 print("Experiment_id: {}".format(experiment.experiment_id))
 print("Artifact Location: {}".format(experiment.artifact_location))
 print("Tags: {}".format(experiment.tags))
@@ -107,6 +107,7 @@ als.setMaxIter(5)\
    .setUserCol("user_int_id")
 
 # COMMAND ----------
+
 
 reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="token_int_id", metricName="rmse")
 
@@ -356,7 +357,7 @@ print('Tokens user has held:')
 users_tokens.select('name').show()  
     
 # generate dataframe of tokens user doesn't have 
-tokens_not_held = tripletDF.filter(~ tripletDF['token_int_id'].isin([token['token_int_id'] for token in users_tokens.collect()]))    
+tokens_not_held = tripletDF.filter(~ tripletDF['token_int_id'].isin([token['token_int_id'] for token in users_tokens.collect()])) \                                                     .select('token_int_id').withColumn('user_int_id', F.l
 
 # COMMAND ----------
 
