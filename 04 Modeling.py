@@ -108,6 +108,7 @@ als.setMaxIter(5)\
 
 # COMMAND ----------
 
+from pyspark.ml.evaluation import RegressionEvaluator
 reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="token_int_id", metricName="rmse")
 
 # COMMAND ----------
@@ -173,34 +174,42 @@ predicted_plays_df.show(10)
 # COMMAND ----------
 
 # Set params
-#als.setParams(rank = 2, regParam = 0.2)
+als.setParams(rank = 2, regParam = 0.2)
 
 # COMMAND ----------
 
-# Fit model (not yet working - needs enough data to work)
-#model = als.fit(training_df)
+# Fit model
+model = als.fit(training_df)
 
 # COMMAND ----------
 
 # # Test model
-# predict_df = my_model.transform(validation_df)
+predict_df = model.transform(validation_df)
 
-# # Remove nan's from prediction
-# predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
+# Remove nan's from prediction
+predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
 
-# # Evaluate using RSME
-# from pyspark.ml.evaluation import RegressionEvaluator
-# reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse") # make sure these column names are correct
-# error = reg_eval.evaluate(predicted_test_df)
+# Evaluate using RSME
+#from pyspark.ml.evaluation import RegressionEvaluator
+#reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse") # make sure these column names are correct
+error = reg_eval.evaluate(predicted_test_df)
+
+# COMMAND ----------
+
+display(predict_df)
+
+# COMMAND ----------
+
+error
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Fit models using Hyperopt
+# MAGIC ## Fit models using Hyperopt
 
 # COMMAND ----------
 
-# Function to train ALS (needs to return model and score)
+# Function to train ALS
 from pyspark.ml.recommendation import ALS
 from pyspark.ml.evaluation import RegressionEvaluator
 from mlflow.models.signature import ModelSignature
@@ -234,17 +243,18 @@ def train_ALS(rank, regParam, alpha):
                              artifact_path='als-model', registered_model_name="ALS")
         
         # Evaluate model
+        reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse")
         predict_df = model.transform(validation_df)
         # Remove nan's from prediction
         predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
         # Evaluate using RSME
-        reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse")
         error = reg_eval.evaluate(predicted_test_df)      
         
         # Log evaluation metric
         mlflow.log_metric("rsme", error)
+        run_id = run.info.run_id
         
-    return als, error
+    return als, error, run_id
 
 # COMMAND ----------
 
@@ -255,13 +265,13 @@ def train_with_hyperopt(params):
     rank = int(params['rank'])
     regParam = float(params['regParam'])
     alpha = float(params['alpha'])
-    model, rsme = train_ALS(rank, regParam, alpha)
+    model, rsme, run_id = train_ALS(rank, regParam, alpha)
     return {'loss': rsme, 'status': STATUS_OK}
 
 # COMMAND ----------
 
 # Define hyperopt search space
-space = {'rank': hp.choice('rank', [2, 3, 4, 5, 6, 10, 15]), 
+space = {'rank': hp.choice('rank', [2, 3, 4]), 
          'regParam': hp.uniform('regParam', 0.1, 0.5), 
          'alpha': hp.uniform('alpha', 1.0, 5.0)}
 
@@ -272,30 +282,37 @@ with mlflow.start_run():
     best_hyperparam = fmin(fn=train_with_hyperopt, 
                          space=space, 
                          algo=tpe.suggest, 
-                         max_evals=5) #?
+                         max_evals=2)
 
 # COMMAND ----------
 
 # Use hyperopt to get best params for model
-import hyperopt
-
-print(hyperopt.space_eval(space, best_hyperparam))
-print(best_hyperparam)
+best_params = hyperopt.space_eval(space, best_hyperparam)
+print(best_params)
 
 # COMMAND ----------
 
-# If autologging is on, end run with this command
-# mlflow.end_run()
+# MAGIC %md
+# MAGIC ## Retrain model using best params and push to staging
 
 # COMMAND ----------
 
-# Register model in Staging - copied from MusicRecommenderClass
+best_rank = int(best_params['rank'])
+best_regParam = float(best_params['regParam'])
+best_alpha = float(best_params['alpha'])
+ 
+final_model, error, run_id = train_ALS(best_rank, best_regParam, best_alpha)
+
+# COMMAND ----------
+
+# Register model in Staging
 from mlflow.tracking import MlflowClient
 client = MlflowClient()
 model_versions = []
 
 # Transition this model to staging and archive the current staging model if there is one
-filter_string = "run_id='{}'".format('4f3638edf8424956a6e217bdcd0b420f') # run id
+model_run = run_id
+filter_string = "run_id='{}'".format(model_run)
 for mv in client.search_model_versions(filter_string):
     model_versions.append(dict(mv)['version'])
     if dict(mv)['current_stage'] == 'Staging':
@@ -307,14 +324,17 @@ for mv in client.search_model_versions(filter_string):
             stage="Archived"
             )
 client.transition_model_version_stage(
-    name="ALS_aak",
+    name="ALS",
     version=model_versions[0],  # this model (current build)
     stage="Staging"
 )
 
 # COMMAND ----------
 
-filter_string = "run_id='{}'".format('4f3638edf8424956a6e217bdcd0b420f')
+from mlflow.tracking import MlflowClient
+client = MlflowClient()
+model_run = run_id
+filter_string = "run_id='{}'".format(model_run)
 for mv in client.search_model_versions(filter_string):
     print("name={}; run_id={}; version={}".format(mv.name, mv.run_id, mv.version))
 
@@ -322,11 +342,11 @@ for mv in client.search_model_versions(filter_string):
 
 # Test model in Staging
 # Evaluate model
-predict_df = mlflow.spark.load_model('models:/'+"ALS_aak"+'/Staging').stages[0].transform(test_df)
+reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse")
+predict_df = mlflow.spark.load_model('models:/'+"ALS"+'/Staging').stages[0].transform(test_df)
 # Remove nan's from prediction
 predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
 # Evaluate using RSME
-reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse")
 error = reg_eval.evaluate(predicted_test_df)      
 
 # COMMAND ----------
@@ -335,11 +355,10 @@ error
 
 # COMMAND ----------
 
-# Create a dataframe for best model that will be used for predictions/recommendations
 # Predict for a user  
 tokensDF = spark.table("g04_db.toks_silver").cache()
 addressesDF = spark.table("g04_db.wallet_addrs").cache() 
-UserID = addressesDF[addressesDF['addr']==wallet_address].collect()[0][1] 
+UserID = addressesDF[addressesDF['addr']==wallet_address].collect()[0][1]
 # UserID = 9918074 
 users_tokens = tripletDF.filter(tripletDF.user_int_id == UserID).join(tokensDF, tokensDF.id==tripletDF.token_int_id).select('token_int_id', 'name', 'symbol')                                           
 # generate list of tokens held 
@@ -350,7 +369,7 @@ print('Tokens user has held:')
 users_tokens.select('name').show()  
     
 # generate dataframe of tokens user doesn't have 
-tokens_not_held = tripletDF.filter(~ tripletDF['token_int_id'].isin([token['token_int_id'] for token in users_tokens.collect()])) \                                                     .select('token_int_id').withColumn('user_int_id', F.l
+tokens_not_held = tripletDF.filter(~ tripletDF['token_int_id'].isin([token['token_int_id'] for token in users_tokens.collect()])).select('token_int_id').withColumn('user_int_id', F.l)
 
 # COMMAND ----------
 
