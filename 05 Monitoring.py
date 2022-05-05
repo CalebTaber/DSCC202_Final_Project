@@ -25,7 +25,53 @@ print(wallet_address,start_date)
 
 # COMMAND ----------
 
+import random
+import mlflow
+import mlflow.spark
+from mlflow.tracking import MlflowClient
+from mlflow.models.signature import infer_signature
+from mlflow.models.signature import ModelSignature
+from mlflow.types.schema import Schema, ColSpec
+from delta.tables import *
+from pyspark.sql import DataFrame
+from pyspark.sql.types import *
+from pyspark.sql import functions as F
+from pyspark.ml.recommendation import ALS
+from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
+from mlflow.tracking.client import MlflowClient
+from pyspark.ml.feature import StringIndexer
+from pyspark.ml import Pipeline
+from pyspark.sql.functions import col
 
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC use G04_db;
+
+# COMMAND ----------
+
+model_name='ALS'
+
+# COMMAND ----------
+
+df_gold=spark.sql("SELECT * FROM g04_db.prediction_one_user")
+
+# COMMAND ----------
+
+df_gold.display()
+
+# COMMAND ----------
+
+client = MlflowClient()
+
+# COMMAND ----------
+
+client.transition_model_version_stage(
+  name=model_name,
+  version=24,
+  stage='Production',
+)
 
 # COMMAND ----------
 
