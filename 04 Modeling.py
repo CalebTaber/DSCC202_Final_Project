@@ -359,28 +359,48 @@ error
 tokensDF = spark.table("g04_db.toks_silver").cache()
 addressesDF = spark.table("g04_db.wallet_addrs").cache() 
 UserID = addressesDF[addressesDF['addr']==wallet_address].collect()[0][1]
-# UserID = 9918074 
+print(UserID)
+#UserID = 18330252 
 users_tokens = tripletDF.filter(tripletDF.user_int_id == UserID).join(tokensDF, tokensDF.id==tripletDF.token_int_id).select('token_int_id', 'name', 'symbol')                                           
 # generate list of tokens held 
 tokens_held_list = [] 
-for tok in users_tokens.collect():   
-    tokens_held_list.append(tok['name'])  
+# for tok in users_tokens.collect():   
+#     tokens_held_list.append(tok['name'])  
 print('Tokens user has held:') 
 users_tokens.select('name').show()  
     
 # generate dataframe of tokens user doesn't have 
-tokens_not_held = tripletDF.filter(~ tripletDF['token_int_id'].isin([token['token_int_id'] for token in users_tokens.collect()])).select('token_int_id').withColumn('user_int_id', F.l)
+tokens_not_held = tripletDF.filter(~ tripletDF['token_int_id'].isin([token['token_int_id'] for token in users_tokens.collect()])).select('token_int_id').withColumn('user_int_id', F.lit(UserID)).distinct()
 
 # COMMAND ----------
 
-# Print prediction output
+# Print prediction output and save top predictions (recommendations) to table in DB
+#model = mlflow.spark.load_model('models:/'+'ALS'+'/Staging') ##Uncomment this with name of our best model
+predicted_toks = model.transform(tokens_not_held)
+    
 print('Predicted Tokens:')
-predicted_toks.join(tripletDF, 'token_int_id') \
+toppredictions = predicted_toks.join(tripletDF, 'token_int_id') \
                  .join(tokensDF, tokensDF.id==tripletDF.token_int_id) \
                  .select('name', 'symbol') \
                  .distinct() \
-                 .orderBy('prediction', ascending = False) \
-                 .show(10)
+                 .orderBy('prediction', ascending = False)
+print(toppredictions.show(5))
+spark.sql("""DROP TABLE IF EXISTS g04_db.toprecs_one_user""")
+toppredictions.write \
+    .format("delta") \
+    .mode("overwrite") \
+    .saveAsTable("g04_db.toprecs_one_user")
+
+# COMMAND ----------
+
+#Create final dataframe and save as table to DB
+predicted_toks = predicted_toks.join(addressesDF, predicted_toks.user_int_id == addressesDF.addr_id)
+predicted_toks = predicted_toks.join(tokensDF, predicted_toks.token_int_id == tokensDF.id).select("token_int_id", "user_int_id", "prediction", "addr" , "address" ).withColumnRenamed("addr", "user_address").withColumnRenamed("address", "token_address")
+spark.sql("""DROP TABLE IF EXISTS g04_db.prediction_one_user""")
+predicted_toks.write \
+    .format("delta") \
+    .mode("overwrite") \
+    .saveAsTable("g04_db.prediction_one_user")
 
 # COMMAND ----------
 
