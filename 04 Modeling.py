@@ -115,8 +115,8 @@ from pyspark.sql import functions as F
 from mlflow.models.signature import ModelSignature
 from mlflow.types.schema import Schema, ColSpec
 
-ranks = [2, 4]
-regParams = [0.2, 0.25]
+ranks = [2, 4, 6, 8]
+regParams = [0.001, 0.05, 0.1, 0.2, 0.3]
 errors = [[0]*len(ranks)]*len(regParams)
 models = [[0]*len(ranks)]*len(regParams)
 err = 0
@@ -170,6 +170,10 @@ als.setRank(ranks[best_params[1]])
 print( 'The best model was trained with regularization parameter %s' % regParams[best_params[0]])
 print( 'The best model was trained with rank %s' % ranks[best_params[1]])
 my_model = models[best_params[0]][best_params[1]]
+
+# COMMAND ----------
+
+best_params[2]
 
 # COMMAND ----------
 
