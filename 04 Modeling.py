@@ -60,18 +60,8 @@ tripletDF = tripletDF.withColumnRenamed("addr_id", "user_int_id").withColumnRena
 
 # COMMAND ----------
 
-# Check for nulls
-tripletDF.select([count(when(isnan(c) | col(c).isNull(), c)).alias(c) for c in tripletDF.columns]).show()
-
-# COMMAND ----------
-
 # Drop na in active holding column
 tripletDF = tripletDF.dropna(how="any", subset="active_holding_usd")
-
-# COMMAND ----------
-
-# Ensure rating is cast to float
-tripletDF = tripletDF.withColumn("active_holding_usd", tripletDF["active_holding_usd"].cast(DoubleType()))
 
 # COMMAND ----------
 
@@ -86,7 +76,7 @@ test_df = split_b_20_df.cache()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Fit ALS model using grid search
+# MAGIC ## Fit ALS model using grid search
 
 # COMMAND ----------
 
@@ -111,8 +101,8 @@ reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="token_int_i
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 grid = ParamGridBuilder() \
   .addGrid(als.maxIter, [10]) \
-  .addGrid(als.regParam, [0.15, 0.2, 0.25]) \
-  .addGrid(als.rank, [4, 8, 12, 16]) \
+  .addGrid(als.regParam, [0.1, 0.15]) \
+  .addGrid(als.rank, [2, 4]) \
   .build()
 
 # COMMAND ----------
@@ -122,69 +112,64 @@ cv = CrossValidator(estimator=als, evaluator=reg_eval, estimatorParamMaps=grid, 
 # COMMAND ----------
 
 from pyspark.sql import functions as F
-tolerance = 0.03
-ranks = [2, 4, 8, 12]
-regParams = [0.10,0.15, 0.2, 0.25]
+from mlflow.models.signature import ModelSignature
+from mlflow.types.schema import Schema, ColSpec
+
+ranks = [2, 4]
+regParams = [0.2, 0.25]
 errors = [[0]*len(ranks)]*len(regParams)
 models = [[0]*len(ranks)]*len(regParams)
 err = 0
 min_error = float('inf')
 best_rank = -1
 i = 0
+
+input_schema = Schema([
+    ColSpec("integer", "user_int_id"),
+    ColSpec("integer", "token_int_id"),
+])
+output_schema = Schema([ColSpec("double")])
+signature = ModelSignature(inputs=input_schema, outputs=output_schema)
+    
 for regParam in regParams:
-  j = 0
-  for rank in ranks:
-    # Set the rank here:
-    als.setParams(rank = rank, regParam = regParam)
-    # Create the model with these parameters.
-    model = als.fit(training_df)
-    # Run the model to create a prediction. Predict against the validation_df.
-    predict_df = model.transform(validation_df)
- 
-    # Remove NaN values from prediction (due to SPARK-14489)
-    predicted_plays_df = predict_df.filter(predict_df.prediction != float('nan'))
-    predicted_plays_df = predicted_plays_df.withColumn("prediction", F.abs(F.round(predicted_plays_df["prediction"],0)))
-    # Run the previously created RMSE evaluator, reg_eval, on the predicted_ratings_df DataFrame
-    error = reg_eval.evaluate(predicted_plays_df)
-    errors[i][j] = error
-    models[i][j] = model
-    print( 'For rank %s, regularization parameter %s the RMSE is %s' % (rank, regParam, error))
-    if error < min_error:
-      min_error = error
-      best_params = [i,j]
-    j += 1
-  i += 1
- 
+    j = 0
+    for rank in ranks:
+        with mlflow.start_run() as run:
+            mlflow.set_tags({"group": 'G04', "class": "DSCC202-402"})
+            # Set the rank here:
+            als.setParams(rank = rank, regParam = regParam)
+            # Create the model with these parameters.
+            model = als.fit(training_df)
+            # Run the model to create a prediction. Predict against the validation_df.
+            predict_df = model.transform(validation_df)
+
+            # Remove NaN values from prediction (due to SPARK-14489)
+            predicted_plays_df = predict_df.filter(predict_df.prediction != float('nan'))
+            predicted_plays_df = predicted_plays_df.withColumn("prediction", F.abs(F.round(predicted_plays_df["prediction"],0)))
+            # Run the previously created RMSE evaluator, reg_eval, on the predicted_ratings_df DataFrame
+            error = reg_eval.evaluate(predicted_plays_df)
+            errors[i][j] = error
+            models[i][j] = model
+            print( 'For rank %s, regularization parameter %s the RMSE is %s' % (rank, regParam, error))
+            if error < min_error:
+                min_error = error
+                best_params = [i,j, run.info.run_id]
+                
+            # Log model
+            mlflow.log_params({"rank": rank, "regParam": regParam})
+            mlflow.log_metric('rsme', error) 
+            mlflow.spark.log_model(spark_model=model, signature = signature,
+                     artifact_path='als-model', registered_model_name='ALS')
+        j += 1
+    i += 1
+
+# COMMAND ----------
+
 als.setRegParam(regParams[best_params[0]])
 als.setRank(ranks[best_params[1]])
 print( 'The best model was trained with regularization parameter %s' % regParams[best_params[0]])
 print( 'The best model was trained with rank %s' % ranks[best_params[1]])
 my_model = models[best_params[0]][best_params[1]]
-
-# COMMAND ----------
-
-predicted_plays_df.show(10)
-
-# COMMAND ----------
-
-# Test model
-predict_df = model.transform(validation_df)
-
-# Remove nan's from prediction
-predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
-
-# Evaluate using RSME
-#from pyspark.ml.evaluation import RegressionEvaluator
-#reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse") # make sure these column names are correct
-error = reg_eval.evaluate(predicted_test_df)
-
-# COMMAND ----------
-
-display(predict_df)
-
-# COMMAND ----------
-
-error
 
 # COMMAND ----------
 
@@ -199,7 +184,7 @@ client = MlflowClient()
 model_versions = []
 
 # Transition this model to staging and archive the current staging model if there is one
-model_run = run_id # insert run id here
+model_run = best_params[2] # run_id
 filter_string = "run_id='{}'".format(model_run)
 for mv in client.search_model_versions(filter_string):
     model_versions.append(dict(mv)['version'])
@@ -219,15 +204,6 @@ client.transition_model_version_stage(
 
 # COMMAND ----------
 
-from mlflow.tracking import MlflowClient
-client = MlflowClient()
-model_run = run_id
-filter_string = "run_id='{}'".format(model_run)
-for mv in client.search_model_versions(filter_string):
-    print("name={}; run_id={}; version={}".format(mv.name, mv.run_id, mv.version))
-
-# COMMAND ----------
-
 # Test model in Staging
 # Evaluate model
 reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse")
@@ -240,6 +216,11 @@ error = reg_eval.evaluate(predicted_test_df)
 # COMMAND ----------
 
 error
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Predictions
 
 # COMMAND ----------
 
@@ -263,7 +244,7 @@ tokens_not_held = tripletDF.filter(~ tripletDF['token_int_id'].isin([token['toke
 # COMMAND ----------
 
 # Print prediction output and save top predictions (recommendations) to table in DB
-#model = mlflow.spark.load_model('models:/'+'ALS'+'/Staging') ##Uncomment this with name of our best model
+model = mlflow.spark.load_model('models:/'+'ALS'+'/Staging') ##Uncomment this with name of our best model
 predicted_toks = model.transform(tokens_not_held)
     
 print('Predicted Tokens:')
