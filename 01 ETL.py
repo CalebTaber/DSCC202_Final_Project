@@ -69,6 +69,7 @@ from pyspark.sql.window import Window
 #    .saveAsTable("g04_db.toks_silver")
 #)
 
+spark.sql("""DROP TABLE IF EXISTS g04_db.toks_silver""")
 
 tpu = spark.table("ethereumetl.token_prices_usd")
 tokens = spark.table("ethereumetl.tokens")
@@ -82,6 +83,7 @@ tokens_silver = (
                               col('price_usd'))
                  .dropDuplicates(['address']) 
                  .withColumn("id", row_number().over(Window.orderBy(lit(1))))
+                 .repartition("address")
                 )
 
 (
@@ -123,6 +125,8 @@ print("tokens_silver_sub assertion passed")
 #          .partitionBy("id")
 #          .saveAsTable('g04_db.tt_silver_part'))
 
+spark.sql("""DROP TABLE IF EXISTS g04_db.tt_silver""")
+
 sqlContext.setConf("spark.sql.shuffle.partitions","auto")
 
 
@@ -138,6 +142,7 @@ tt_silver = (
                           .where(tok_trans_sub.block_number == blocks_sub.number)
                           .select('id', 'to_address', 'from_address', 'value', 'timestamp')
                           .withColumn("timestamp", col('timestamp').cast("timestamp"))
+                          .repartition('id')
               )
 
 (tt_silver.write
@@ -145,6 +150,8 @@ tt_silver = (
           .mode("overwrite")
           .partitionBy("id")
           .saveAsTable('g04_db.tt_silver'))
+
+spark.sql("""OPTIMIZE g04_db.tt_silver ZORDER BY (to_addr)""")
 
 # COMMAND ----------
 
@@ -186,17 +193,21 @@ spark.sql("""DROP TABLE IF EXISTS g04_db.bought""")
 from pyspark.sql.window import Window
 from pyspark.sql.functions import sum
 
-tt_silver = spark.table('g04_db.tt_silver_part')
-toks_silver = spark.table('g04_db.toks_silver_part')
+tt_silver = spark.table('g04_db.tt_silver')
+toks_silver = spark.table('g04_db.toks_silver')
 
 bought = tt_silver.withColumnRenamed('to_address', 'to_addr')\
                            .groupBy('id', 'to_addr')\
-                           .agg(sum('value').alias('b_val'))
+                           .agg(sum('value').alias('b_val'))\
+                           .repartition("id")
 
 bought.write\
       .format("delta")\
       .mode("overwrite")\
+      .partitionBy("id")\
       .saveAsTable("g04_db.bought")
+
+spark.sql("""OPTIMIZE g04_db.bought ZORDER BY (to_addr)""")
 
 # COMMAND ----------
 
@@ -208,12 +219,16 @@ tt_silver = spark.table('g04_db.tt_silver')
 
 sold = tt_silver.withColumnRenamed('from_address', 'from_addr')\
                          .groupBy('id', 'from_addr')\
-                         .agg(sum('value').alias('s_val'))
+                         .agg(sum('value').alias('s_val'))\
+                         .repartition('id')
 
 sold.write\
       .format("delta")\
       .mode("overwrite")\
+      .partitionBy("id")\
       .saveAsTable("g04_db.sold")
+    
+spark.sql("""OPTIMIZE g04_db.sold ZORDER BY (from_addr)""")
 
 # COMMAND ----------
 
@@ -225,12 +240,16 @@ sold = spark.table('g04_db.sold')
 with_bal = bought.join(sold, (bought.id == sold.id) & (bought.to_addr == sold.from_addr), 'inner')\
                  .withColumn('balance', bought.b_val - sold.s_val)\
                  .withColumnRenamed('to_addr', 'addr')\
-                 .select('addr', bought.id, 'balance')
+                 .select('addr', bought.id, 'balance')\
+                 .repartition("id")
 
 with_bal.write\
         .format("delta")\
         .mode("overwrite")\
+        .partitionBy("id")\
         .saveAsTable("g04_db.with_bal")
+
+spark.sql("""OPTIMIZE g04_db.with_bal ZORDER BY (addr)""")
 
 # COMMAND ----------
 
@@ -241,12 +260,16 @@ with_bal = spark.table('g04_db.with_bal')
 
 with_usd = with_bal.join(toks_silver, with_bal.id == toks_silver.id, 'inner')\
                    .withColumn('bal_usd', with_bal.balance * toks_silver.price_usd)\
-                   .select(with_bal.addr, with_bal.id, 'bal_usd')
+                   .select(with_bal.addr, with_bal.id, 'bal_usd')\
+                   .repartition('id')
 
 with_usd.write\
         .format("delta")\
         .mode("overwrite")\
+        .partitionBy("id")\
         .saveAsTable("g04_db.with_usd")
+
+spark.sql("""OPTIMIZE g04_db.with_usd ZORDER BY (addr)""")
 
 # COMMAND ----------
 
@@ -257,12 +280,14 @@ from pyspark.sql.window import Window
 with_usd = spark.table('g04_db.with_usd')
 
 wallet_addrs = with_usd.select('addr').distinct()\
-                       .withColumn("addr_id", row_number().over(Window.orderBy(lit(1))))
+                       .withColumn("addr_id", row_number().over(Window.orderBy(lit(1))))\
+                       #.repartition("addr")
 
 wallet_addrs.write\
             .format("delta")\
             .mode("overwrite")\
             .saveAsTable("g04_db.wallet_addrs")
+
 
 # COMMAND ----------
 
