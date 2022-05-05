@@ -61,6 +61,15 @@ print("Tokens assertion passed")
 
 from pyspark.sql.window import Window
 
+#tokens_silver = create_tokens_silver()
+#(
+#  tokens_silver.write
+#    .format("delta")
+#    .mode("overwrite")
+#    .saveAsTable("g04_db.toks_silver")
+#)
+
+
 tpu = spark.table("ethereumetl.token_prices_usd")
 tokens = spark.table("ethereumetl.tokens")
 
@@ -79,6 +88,7 @@ tokens_silver = (
   tokens_silver.write
     .format("delta")
     .mode("overwrite")
+    .partitionBy("address")
     .saveAsTable("g04_db.toks_silver")
 )
 
@@ -106,7 +116,15 @@ print("tokens_silver_sub assertion passed")
 # Only the token ID -- NOT THE TOKEN ADDRESS -- is stored in this table
 # This helps save space and (I hope) speeds up table manipulation
 
-spark.conf.set("spark.sql.shuffle.partitions", 'auto')
+#tt_silver = create_tt_silver()
+#(tt_silver.write
+#          .format("delta")
+#          .mode("overwrite")
+#          .partitionBy("id")
+#          .saveAsTable('g04_db.tt_silver_part'))
+
+sqlContext.setConf("spark.sql.shuffle.partitions","auto")
+
 
 tok_trans_sub = spark.table('ethereumetl.token_transfers').select('token_address', 'from_address', 'to_address', 'value', 'block_number')
 blocks_sub = spark.table('ethereumetl.blocks').select('timestamp', 'number')
@@ -125,6 +143,7 @@ tt_silver = (
 (tt_silver.write
           .format("delta")
           .mode("overwrite")
+          .partitionBy("id")
           .saveAsTable('g04_db.tt_silver'))
 
 # COMMAND ----------
@@ -156,9 +175,19 @@ tt_silver_abridged = (
 
 spark.sql("""DROP TABLE IF EXISTS g04_db.bought""")
 
+#triple = create_triple()
+
+#triple.write\
+#      .format("delta")\
+#      .mode("overwrite")\
+#      .option("mergeSchema", False)\
+#      .saveAsTable("g04_db.triple_part")
+
+from pyspark.sql.window import Window
 from pyspark.sql.functions import sum
 
-tt_silver = spark.table('g04_db.tt_silver')
+tt_silver = spark.table('g04_db.tt_silver_part')
+toks_silver = spark.table('g04_db.toks_silver_part')
 
 bought = tt_silver.withColumnRenamed('to_address', 'to_addr')\
                            .groupBy('id', 'to_addr')\
