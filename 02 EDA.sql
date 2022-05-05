@@ -197,33 +197,8 @@ FROM (
 USE g04_db;
 
 SELECT from_address, timestamp
-FROM token_transfers_silver
+FROM tt_silver
 ORDER BY timestamp DESC;
-
--- COMMAND ----------
-
-USE g04_db;
-
-DROP TABLE IF EXISTS eda_tok_trans_abridged;
-
-CREATE TABLE eda_tok_trans_abridged(
-  token_address STRING,
-  from_address STRING,
-  to_address STRING,
-  value DECIMAL(38,0),
-  transaction_hash STRING,
-  log_index BIGINT,
-  block_number BIGINT
-)
-USING DELTA;
-
-INSERT INTO eda_tok_trans_abridged
-  SELECT token_address, from_address, to_address, value, transaction_hash, log_index, block_number
-  FROM ethereumetl.token_transfers
-  WHERE block_number > (SELECT MAX(number)
-                        FROM ethereumetl.blocks
-                        WHERE CAST(timestamp AS TIMESTAMP) < CAST('${start.date}' AS TIMESTAMP)
-                       );
 
 -- COMMAND ----------
 
@@ -239,8 +214,7 @@ USING DELTA;
 
 INSERT INTO eda_toks_sold
   SELECT token_address, SUM(value)
---  FROM ethereumetl.token_transfers
-  FROM g04_db.eda_tok_trans_abridged
+  FROM ethereumetl.token_transfers
   WHERE from_address = '${wallet.address}'
   GROUP BY token_address;
 
@@ -258,8 +232,7 @@ USING DELTA;
 
 INSERT INTO g04_db.eda_toks_bought
   SELECT token_address, SUM(value)
---  FROM ethereumetl.token_transfers
-  FROM g04_db.eda_tok_trans_abridged
+  FROM ethereumetl.token_transfers
   WHERE to_address = '${wallet.address}'
   GROUP BY token_address;
 
@@ -267,10 +240,8 @@ INSERT INTO g04_db.eda_toks_bought
 
 USE g04_db;
 
-SELECT B.token_address AS Buy_Tok,
-       B.amt_bought,
-       S.token_address AS Sell_Tok,
-       S.amt_sold,
+SELECT (CASE WHEN B.token_address IS NULL THEN S.token_address
+        ELSE B.token_address END) AS token,
        (CASE WHEN S.amt_sold IS NULL THEN B.amt_bought 
              WHEN B.amt_bought IS NULL THEN -S.amt_sold
         ELSE B.amt_bought - S.amt_sold END) AS balance
