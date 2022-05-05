@@ -25,6 +25,19 @@ print(wallet_address,start_date)
 
 # COMMAND ----------
 
+import mlflow
+logged_model = 'runs:/b5fb0e0bf2f84353a9ee71541eac98b7/als-model'
+
+# Load model as a PyFuncModel.
+loaded_model = mlflow.pyfunc.load_model(logged_model)
+
+# Predict on a Pandas DataFrame.
+data=predicted_toks
+import pandas as pd
+loaded_model.predict(pd.DataFrame(data))
+
+# COMMAND ----------
+
 
 
 # COMMAND ----------
