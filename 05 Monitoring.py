@@ -57,7 +57,6 @@ model_name='ALS'
 
 df_gold=spark.sql("SELECT * FROM g04_db.prediction_one_user")
 
-
 # COMMAND ----------
 
 df_gold.display()
