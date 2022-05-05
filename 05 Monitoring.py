@@ -69,7 +69,7 @@ client = MlflowClient()
 
 client.transition_model_version_stage(
   name=model_name,
-  version=24,
+  version=45,
   stage='Production',
 )
 
