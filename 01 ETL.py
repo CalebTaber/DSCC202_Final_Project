@@ -125,6 +125,7 @@ print("tokens_silver_sub assertion passed")
 
 sqlContext.setConf("spark.sql.shuffle.partitions","auto")
 
+
 tok_trans_sub = spark.table('ethereumetl.token_transfers').select('token_address', 'from_address', 'to_address', 'value', 'block_number')
 blocks_sub = spark.table('ethereumetl.blocks').select('timestamp', 'number')
 tokens_silver_sub = spark.table('g04_db.toks_silver').select('address', 'id')
@@ -172,7 +173,7 @@ tt_silver_abridged = (
 
 # COMMAND ----------
 
-# CALEB
+spark.sql("""DROP TABLE IF EXISTS g04_db.bought""")
 
 #triple = create_triple()
 
@@ -192,30 +193,91 @@ bought = tt_silver.withColumnRenamed('to_address', 'to_addr')\
                            .groupBy('id', 'to_addr')\
                            .agg(sum('value').alias('b_val'))
 
+bought.write\
+      .format("delta")\
+      .mode("overwrite")\
+      .saveAsTable("g04_db.bought")
+
+# COMMAND ----------
+
+spark.sql("""DROP TABLE IF EXISTS g04_db.sold""")
+
+from pyspark.sql.functions import sum
+
+tt_silver = spark.table('g04_db.tt_silver')
+
 sold = tt_silver.withColumnRenamed('from_address', 'from_addr')\
                          .groupBy('id', 'from_addr')\
                          .agg(sum('value').alias('s_val'))
+
+sold.write\
+      .format("delta")\
+      .mode("overwrite")\
+      .saveAsTable("g04_db.sold")
+
+# COMMAND ----------
+
+spark.sql("""DROP TABLE IF EXISTS g04_db.with_bal""")
+
+bought = spark.table('g04_db.bought')
+sold = spark.table('g04_db.sold')
 
 with_bal = bought.join(sold, (bought.id == sold.id) & (bought.to_addr == sold.from_addr), 'inner')\
                  .withColumn('balance', bought.b_val - sold.s_val)\
                  .withColumnRenamed('to_addr', 'addr')\
                  .select('addr', bought.id, 'balance')
 
+with_bal.write\
+        .format("delta")\
+        .mode("overwrite")\
+        .saveAsTable("g04_db.with_bal")
+
+# COMMAND ----------
+
+spark.sql("""DROP TABLE IF EXISTS g04_db.with_usd""")
+
+toks_silver = spark.table('g04_db.toks_silver')
+with_bal = spark.table('g04_db.with_bal')
+
 with_usd = with_bal.join(toks_silver, with_bal.id == toks_silver.id, 'inner')\
                    .withColumn('bal_usd', with_bal.balance * toks_silver.price_usd)\
                    .select(with_bal.addr, with_bal.id, 'bal_usd')
 
-addrs_abridged = with_usd.select('addr').distinct()\
-                         .withColumn("addr_id", row_number().over(Window.orderBy(lit(1))))
+with_usd.write\
+        .format("delta")\
+        .mode("overwrite")\
+        .saveAsTable("g04_db.with_usd")
 
-triple = with_usd.join(addrs_abridged, with_usd.addr == addrs_abridged.addr, 'inner')\
-                 .select(addrs_abridged.addr_id, with_usd.id, 'bal_usd')\
+# COMMAND ----------
+
+spark.sql("""DROP TABLE IF EXISTS g04_db.wallet_addrs""")
+
+from pyspark.sql.window import Window
+
+with_usd = spark.table('g04_db.with_usd')
+
+wallet_addrs = with_usd.select('addr').distinct()\
+                       .withColumn("addr_id", row_number().over(Window.orderBy(lit(1))))
+
+wallet_addrs.write\
+            .format("delta")\
+            .mode("overwrite")\
+            .saveAsTable("g04_db.wallet_addrs")
+
+# COMMAND ----------
+
+spark.sql("""DROP TABLE IF EXISTS g04_db.triple""")
+
+with_usd = spark.table('g04_db.with_usd')
+wallet_addrs = spark.table('g04_db.wallet_addrs')
+
+triple = with_usd.join(wallet_addrs, with_usd.addr == wallet_addrs.addr, 'inner')\
+                 .select(wallet_addrs.addr_id, with_usd.id, 'bal_usd')\
                  .withColumnRenamed('id', 'tok_id')
 
 triple.write\
       .format("delta")\
       .mode("overwrite")\
-      .option("mergeSchema", False)\
       .saveAsTable("g04_db.triple")
 
 # COMMAND ----------
