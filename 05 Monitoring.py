@@ -51,12 +51,7 @@ from pyspark.sql.functions import col
 
 # COMMAND ----------
 
-model_name='ALS'
-
-# COMMAND ----------
-
 df_gold=spark.sql("SELECT * FROM g04_db.prediction_one_user")
-
 
 # COMMAND ----------
 
@@ -64,15 +59,34 @@ df_gold.display()
 
 # COMMAND ----------
 
+from mlflow.tracking import MlflowClient
 client = MlflowClient()
+run_stage = client.get_latest_versions('ALS', ["Staging"])[0]
+client.get_metric_history(run_id=run, key='rsme')[0].value
 
 # COMMAND ----------
 
-client.transition_model_version_stage(
-  name=model_name,
-  version=45,
-  stage='Production',
+run_staging=run_stage.version
+
+# COMMAND ----------
+
+run_prod = client.get_latest_versions('ALS', ["Production"])[0]
+client.get_metric_history(run_id=run, key='rsme')[0].value
+
+# COMMAND ----------
+
+run_production=run_prod.version
+
+# COMMAND ----------
+
+if run_staging>run_production:
+    version_fin=run_staging
+    client.transition_model_version_stage(
+    name=model_name,
+    version=version_fin,
+    stage='Production',
 )
+
 
 # COMMAND ----------
 
