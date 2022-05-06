@@ -19,7 +19,9 @@ def create_tokens_silver():
                      .select(col('contract_address').alias('address'),
                                   col('ethereumetl.tokens.name'),
                                   col('ethereumetl.tokens.symbol'),
-                                  col('price_usd'))
+                                  col('price_usd'),
+                                  col('links'),
+                                  col('image'))
                      .dropDuplicates(['address']) 
                      .withColumn("id", row_number().over(Window.orderBy(lit(1))))
                      .repartition("address")

@@ -45,7 +45,6 @@ spark.conf.set('start.date',start_date)
 
 # COMMAND ----------
 
-# CALEB
 # Strips down the tokens table to only ERC20 tokens. Also, adds pricing information
 # Only tracks tokens included in the token_prices_usd table since tokens without pricing info are not of interest to us
 # Only needs to be run once per day so that the token prices are up-to-date
@@ -64,12 +63,10 @@ tokens_silver = create_tokens_silver()
 
 # COMMAND ----------
 
-# CALEB
 # Strips down the token_transfers table to a more manageable set of useful attributes
 # Also removes transfers that involve tokens not stored in the tokens_silver table (see above command)
 
 # Only the token ID -- NOT THE TOKEN ADDRESS -- is stored in this table
-# This helps save space and (I hope) speeds up table manipulation
 
 spark.sql("""DROP TABLE IF EXISTS g04_db.tt_silver""")
 
@@ -82,24 +79,6 @@ tt_silver = create_tt_silver()
           .saveAsTable('g04_db.tt_silver'))
 
 spark.sql("""OPTIMIZE g04_db.tt_silver ZORDER BY (to_address)""")
-
-# COMMAND ----------
-
-# CALEB
-# Fills the abridged token transfers table given a start date specified in the widget
-# Just creates a subset of the token_transfers_silver table
-
-tt_silver = spark.table('g04_db.tt_silver')
-
-tt_silver_abridged = (
-                      tt_silver.select('*')
-                               .where(tt_silver.timestamp > '2021-01-01T00:00:00.000+000')
-                     ).drop('timestamp')
-
-(tt_silver_abridged.write
-                   .format("delta")
-                   .mode("overwrite")
-                   .saveAsTable("g04_db.tt_silver_abridged"))
 
 # COMMAND ----------
 
@@ -190,15 +169,6 @@ triple.write\
       .format("delta")\
       .mode("overwrite")\
       .saveAsTable("g04_db.triple")
-
-# COMMAND ----------
-
-#triOrig = spark.table('g04_db.triple')
-triple.count()
-
-# COMMAND ----------
-
-triple.count()
 
 # COMMAND ----------
 
