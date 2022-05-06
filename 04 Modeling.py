@@ -95,7 +95,7 @@ from mlflow.models.signature import ModelSignature
 from mlflow.types.schema import Schema, ColSpec
 
 ranks = [2, 4] # ranks we tried: [2, 4, 6, 8] (cut down so it will run faster)
-regParams = [0.001, 0.1, 0.2] # regParams we tried [0.001, 0.05, 0.1, 0.2, 0.3] (cut down so it will run faster)
+regParams = [0.1, 0.2] # regParams we tried [0.001, 0.05, 0.1, 0.2, 0.3] (cut down so it will run faster)
 errors = [[0]*len(ranks)]*len(regParams)
 models = [[0]*len(ranks)]*len(regParams)
 err = 0
