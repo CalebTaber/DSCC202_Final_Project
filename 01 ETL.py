@@ -41,16 +41,7 @@ spark.conf.set('start.date',start_date)
 
 # COMMAND ----------
 
-from pyspark.sql.types import _parse_datatype_string
-
-tpu = spark.table("ethereumetl.token_prices_usd")
-tokens = spark.table("ethereumetl.tokens")
-
-assert tpu.schema == _parse_datatype_string("id: string, symbol: string, name: string, asset_platform_id: string, description: string, links: string, image: string, contract_address: string, sentiment_votes_up_percentage: double, sentiment_votes_down_percentage: double, market_cap_rank: double, coingecko_rank: double, coingecko_score: double, developer_score: double, community_score: double, liquidity_score: double, public_interest_score: double, price_usd: double"), "Schema is not validated"
-print("TPU assertion passed")
-
-assert tokens.schema == _parse_datatype_string("address: string, symbol: string, name: string, decimals: bigint, total_supply: decimal(38,0), start_block: bigint, end_block: bigint"), "Schema is not validated"
-print("Tokens assertion passed")
+# MAGIC %run ./includes/ETLFunctions
 
 # COMMAND ----------
 
@@ -59,32 +50,9 @@ print("Tokens assertion passed")
 # Only tracks tokens included in the token_prices_usd table since tokens without pricing info are not of interest to us
 # Only needs to be run once per day so that the token prices are up-to-date
 
-from pyspark.sql.window import Window
-
-#tokens_silver = create_tokens_silver()
-#(
-#  tokens_silver.write
-#    .format("delta")
-#    .mode("overwrite")
-#    .saveAsTable("g04_db.toks_silver")
-#)
-
 spark.sql("""DROP TABLE IF EXISTS g04_db.toks_silver""")
 
-tpu = spark.table("ethereumetl.token_prices_usd")
-tokens = spark.table("ethereumetl.tokens")
-
-tokens_silver = (
-                 (tpu.join(tokens, (tpu.contract_address == tokens.address), 'inner')
-                     .where(tpu.asset_platform_id == 'ethereum')) 
-                 .select(col('contract_address').alias('address'),
-                              col('ethereumetl.tokens.name'),
-                              col('ethereumetl.tokens.symbol'),
-                              col('price_usd'))
-                 .dropDuplicates(['address']) 
-                 .withColumn("id", row_number().over(Window.orderBy(lit(1))))
-                 .repartition("address")
-                )
+tokens_silver = create_tokens_silver()
 
 (
   tokens_silver.write
@@ -96,21 +64,6 @@ tokens_silver = (
 
 # COMMAND ----------
 
-tok_trans_sub = spark.table('ethereumetl.token_transfers').select('token_address', 'from_address', 'to_address', 'value', 'block_number')
-blocks_sub = spark.table('ethereumetl.blocks').select('timestamp', 'number')
-tokens_silver_sub = spark.table('g04_db.toks_silver').select('address', 'id')
-
-assert tok_trans_sub.schema == _parse_datatype_string("token_address:string, from_address:string,to_address:string,value:decimal(38,0),block_number:long"), "tok_trans_sub schema is not validated"
-print("tok_trans_sub assertion passed")
-
-assert blocks_sub.schema == _parse_datatype_string("timestamp:long, number:long"), "blocks_sub schema is not validated"
-print("blocks_sub assertion passed")
-
-assert tokens_silver_sub.schema == _parse_datatype_string("address:string, id:integer"), "tokens_silver_sub schema is not validated"
-print("tokens_silver_sub assertion passed")
-
-# COMMAND ----------
-
 # CALEB
 # Strips down the token_transfers table to a more manageable set of useful attributes
 # Also removes transfers that involve tokens not stored in the tokens_silver table (see above command)
@@ -118,32 +71,9 @@ print("tokens_silver_sub assertion passed")
 # Only the token ID -- NOT THE TOKEN ADDRESS -- is stored in this table
 # This helps save space and (I hope) speeds up table manipulation
 
-#tt_silver = create_tt_silver()
-#(tt_silver.write
-#          .format("delta")
-#          .mode("overwrite")
-#          .partitionBy("id")
-#          .saveAsTable('g04_db.tt_silver_part'))
-
 spark.sql("""DROP TABLE IF EXISTS g04_db.tt_silver""")
 
-sqlContext.setConf("spark.sql.shuffle.partitions","auto")
-
-
-tok_trans_sub = spark.table('ethereumetl.token_transfers').select('token_address', 'from_address', 'to_address', 'value', 'block_number')
-blocks_sub = spark.table('ethereumetl.blocks').select('timestamp', 'number')
-tokens_silver_sub = spark.table('g04_db.toks_silver').select('address', 'id')
-
-tt_silver = (
-             tok_trans_sub.join(tokens_silver_sub, (tokens_silver_sub.address == tok_trans_sub.token_address), 'inner')
-                          .select('id', 'to_address', 'from_address', 'value', 'block_number')
-                          .where(tokens_silver_sub.address == tok_trans_sub.token_address)
-                          .join(blocks_sub, (tok_trans_sub.block_number == blocks_sub.number), 'inner')
-                          .where(tok_trans_sub.block_number == blocks_sub.number)
-                          .select('id', 'to_address', 'from_address', 'value', 'timestamp')
-                          .withColumn("timestamp", col('timestamp').cast("timestamp"))
-                          .repartition('id')
-              )
+tt_silver = create_tt_silver()
 
 (tt_silver.write
           .format("delta")
@@ -151,14 +81,7 @@ tt_silver = (
           .partitionBy("id")
           .saveAsTable('g04_db.tt_silver'))
 
-spark.sql("""OPTIMIZE g04_db.tt_silver ZORDER BY (to_addr)""")
-
-# COMMAND ----------
-
-tt_silver = spark.table('g04_db.tt_silver')
-
-assert tt_silver.schema == _parse_datatype_string("id: int, to_address: string, from_address: string, value: decimal(38,0), timestamp: timestamp"), "tt_silver schema is not validated"
-print("tt_silver assertion passed")
+spark.sql("""OPTIMIZE g04_db.tt_silver ZORDER BY (to_address)""")
 
 # COMMAND ----------
 
@@ -180,26 +103,11 @@ tt_silver_abridged = (
 
 # COMMAND ----------
 
+# Using the tt_silver & toks_silver tables, finds all addresses that bought coins and groups their total purchases
+
 spark.sql("""DROP TABLE IF EXISTS g04_db.bought""")
 
-#triple = create_triple()
-
-#triple.write\
-#      .format("delta")\
-#      .mode("overwrite")\
-#      .option("mergeSchema", False)\
-#      .saveAsTable("g04_db.triple_part")
-
-from pyspark.sql.window import Window
-from pyspark.sql.functions import sum
-
-tt_silver = spark.table('g04_db.tt_silver')
-toks_silver = spark.table('g04_db.toks_silver')
-
-bought = tt_silver.withColumnRenamed('to_address', 'to_addr')\
-                           .groupBy('id', 'to_addr')\
-                           .agg(sum('value').alias('b_val'))\
-                           .repartition("id")
+bought = create_bought()
 
 bought.write\
       .format("delta")\
@@ -211,16 +119,11 @@ spark.sql("""OPTIMIZE g04_db.bought ZORDER BY (to_addr)""")
 
 # COMMAND ----------
 
+# Same as bought but centered around the from_address showing total sales per coin
+
 spark.sql("""DROP TABLE IF EXISTS g04_db.sold""")
 
-from pyspark.sql.functions import sum
-
-tt_silver = spark.table('g04_db.tt_silver')
-
-sold = tt_silver.withColumnRenamed('from_address', 'from_addr')\
-                         .groupBy('id', 'from_addr')\
-                         .agg(sum('value').alias('s_val'))\
-                         .repartition('id')
+sold = create_sold()
 
 sold.write\
       .format("delta")\
@@ -232,16 +135,11 @@ spark.sql("""OPTIMIZE g04_db.sold ZORDER BY (from_addr)""")
 
 # COMMAND ----------
 
+#Combines the bought and sold tables creating an active holding wallet
+
 spark.sql("""DROP TABLE IF EXISTS g04_db.with_bal""")
 
-bought = spark.table('g04_db.bought')
-sold = spark.table('g04_db.sold')
-
-with_bal = bought.join(sold, (bought.id == sold.id) & (bought.to_addr == sold.from_addr), 'inner')\
-                 .withColumn('balance', bought.b_val - sold.s_val)\
-                 .withColumnRenamed('to_addr', 'addr')\
-                 .select('addr', bought.id, 'balance')\
-                 .repartition("id")
+with_bal = create_with_bal()
 
 with_bal.write\
         .format("delta")\
@@ -253,15 +151,10 @@ spark.sql("""OPTIMIZE g04_db.with_bal ZORDER BY (addr)""")
 
 # COMMAND ----------
 
+#Converts the raw coin count from the wallet created above to a dollar value
 spark.sql("""DROP TABLE IF EXISTS g04_db.with_usd""")
 
-toks_silver = spark.table('g04_db.toks_silver')
-with_bal = spark.table('g04_db.with_bal')
-
-with_usd = with_bal.join(toks_silver, with_bal.id == toks_silver.id, 'inner')\
-                   .withColumn('bal_usd', with_bal.balance * toks_silver.price_usd)\
-                   .select(with_bal.addr, with_bal.id, 'bal_usd')\
-                   .repartition('id')
+with_usd = create_with_usd()
 
 with_usd.write\
         .format("delta")\
@@ -273,15 +166,11 @@ spark.sql("""OPTIMIZE g04_db.with_usd ZORDER BY (addr)""")
 
 # COMMAND ----------
 
+#Finds the unique wallets with a row number integer ID
+
 spark.sql("""DROP TABLE IF EXISTS g04_db.wallet_addrs""")
 
-from pyspark.sql.window import Window
-
-with_usd = spark.table('g04_db.with_usd')
-
-wallet_addrs = with_usd.select('addr').distinct()\
-                       .withColumn("addr_id", row_number().over(Window.orderBy(lit(1))))\
-                       #.repartition("addr")
+wallet_addrs = create_wallet_addrs()
 
 wallet_addrs.write\
             .format("delta")\
@@ -291,19 +180,21 @@ wallet_addrs.write\
 
 # COMMAND ----------
 
+#Finalizes the wallet construction creating a triple with a wallet ID int, token ID int and a value based on USD
+
 spark.sql("""DROP TABLE IF EXISTS g04_db.triple""")
 
-with_usd = spark.table('g04_db.with_usd')
-wallet_addrs = spark.table('g04_db.wallet_addrs')
-
-triple = with_usd.join(wallet_addrs, with_usd.addr == wallet_addrs.addr, 'inner')\
-                 .select(wallet_addrs.addr_id, with_usd.id, 'bal_usd')\
-                 .withColumnRenamed('id', 'tok_id')
+triple = create_triple()
 
 triple.write\
       .format("delta")\
       .mode("overwrite")\
       .saveAsTable("g04_db.triple")
+
+# COMMAND ----------
+
+#triOrig = spark.table('g04_db.triple')
+triple.count()
 
 # COMMAND ----------
 
