@@ -192,16 +192,6 @@ FROM (
 
 -- COMMAND ----------
 
--- FOR TESTING
-
-USE g04_db;
-
-SELECT from_address, timestamp
-FROM tt_silver
-ORDER BY timestamp DESC;
-
--- COMMAND ----------
-
 USE g04_db;
 
 DROP TABLE IF EXISTS eda_toks_sold;
@@ -246,11 +236,6 @@ SELECT (CASE WHEN B.token_address IS NULL THEN S.token_address
              WHEN B.amt_bought IS NULL THEN -S.amt_sold
         ELSE B.amt_bought - S.amt_sold END) AS balance
 FROM eda_toks_bought B FULL OUTER JOIN eda_toks_sold S on B.token_address = S.token_address;
-
--- Some balances may be negative because the tracking period does not necessarily start from the beginning of time
-
--- address = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2';
--- Wrapped Ether (see addr above) is almost always negative
 
 -- COMMAND ----------
 
