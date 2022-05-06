@@ -84,7 +84,7 @@ if stat_rmse>prod_rmse:
     client.transition_model_version_stage(
     name=model_name,
     version=version_fin,
-    stage='Production',
+    stage='Production'
 )
 
 
