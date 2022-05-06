@@ -37,7 +37,9 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+SELECT MAX(number), MAX(CAST(CAST(timestamp AS TIMESTAMP) AS DATE)) AS date 
+FROM blocks;
 
 -- COMMAND ----------
 
@@ -46,7 +48,10 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+SELECT MIN(block_number)
+FROM token_transfers
+WHERE token_address IN (SELECT address FROM silver_contracts WHERE is_erc20 = True);
 
 -- COMMAND ----------
 
@@ -55,7 +60,11 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+
+SELECT COUNT(*)
+FROM silver_contracts
+WHERE is_erc20 = True;
 
 -- COMMAND ----------
 
@@ -64,7 +73,10 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+
+SELECT ((SELECT COUNT(*) FROM transactions WHERE to_address IN (SELECT address FROM silver_contracts)) / COUNT(*))*100 AS percentage
+FROM transactions;
 
 -- COMMAND ----------
 
@@ -73,7 +85,12 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+
+SELECT COUNT(*) AS frequency, token_address, name
+FROM (token_transfers INNER JOIN tokens ON token_address=address)
+GROUP BY token_address, name
+ORDER BY COUNT(*) DESC LIMIT 100;
 
 -- COMMAND ----------
 
@@ -83,7 +100,18 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+
+SELECT (COUNT(to_address)/SUM(count))*100 AS newAddrPercentage
+FROM (
+  SELECT to_address, COUNT(*) AS count
+  FROM token_transfers T INNER JOIN silver_contracts C ON T.token_address = C.address
+  WHERE is_erc20 = TRUE
+  GROUP BY to_address
+);
+
+-- This gets the number of addresses and divides that by the number of transfers
+-- This works since every to_address listed in token_transfers must have at least one (first) transfer
 
 -- COMMAND ----------
 
@@ -93,7 +121,18 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+
+SELECT transaction_index, gas_price
+FROM transactions
+WHERE block_hash=(SELECT hash
+                  FROM blocks
+                  WHERE timestamp=(SELECT MAX(timestamp)
+                                   FROM blocks))
+ORDER BY gas_price DESC;
+
+-- This query shows that transactions with higher gas prices are generally included earlier in the block than transactions with lower gas prices
+-- However, there can be slight variations in this rule
 
 -- COMMAND ----------
 
@@ -103,7 +142,8 @@
 
 -- COMMAND ----------
 
--- TBD
+SELECT MAX(transaction_count)/15 AS MaxThroughput
+FROM blocks;
 
 -- COMMAND ----------
 
@@ -113,7 +153,9 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+SELECT (SUM(value) + SUM(gas)/(1000000000000000000)) AS EtherVolume
+FROM transactions;
 
 -- COMMAND ----------
 
@@ -122,7 +164,9 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+SELECT SUM(gas) AS TotalGas
+FROM transactions;
 
 -- COMMAND ----------
 
@@ -131,7 +175,15 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+
+SELECT MAX(count)
+FROM (
+      SELECT transaction_hash, COUNT(*) AS count
+      FROM token_transfers T INNER JOIN silver_contracts C ON T.token_address = C.address
+      WHERE C.is_erc20 = True
+      GROUP BY transaction_hash
+      );
 
 -- COMMAND ----------
 
@@ -140,7 +192,50 @@
 
 -- COMMAND ----------
 
--- TBD
+USE g04_db;
+
+DROP TABLE IF EXISTS eda_toks_sold;
+
+CREATE TABLE eda_toks_sold(
+  token_address STRING,
+  amt_sold DECIMAL(38,0)
+)
+USING DELTA;
+
+INSERT INTO eda_toks_sold
+  SELECT token_address, SUM(value)
+  FROM ethereumetl.token_transfers
+  WHERE from_address = '${wallet.address}'
+  GROUP BY token_address;
+
+-- COMMAND ----------
+
+USE g04_db;
+
+DROP TABLE IF EXISTS eda_toks_bought;
+
+CREATE TABLE eda_toks_bought(
+  token_address STRING,
+  amt_bought DECIMAL(38,0)
+)
+USING DELTA;
+
+INSERT INTO g04_db.eda_toks_bought
+  SELECT token_address, SUM(value)
+  FROM ethereumetl.token_transfers
+  WHERE to_address = '${wallet.address}'
+  GROUP BY token_address;
+
+-- COMMAND ----------
+
+USE g04_db;
+
+SELECT (CASE WHEN B.token_address IS NULL THEN S.token_address
+        ELSE B.token_address END) AS token,
+       (CASE WHEN S.amt_sold IS NULL THEN B.amt_bought 
+             WHEN B.amt_bought IS NULL THEN -S.amt_sold
+        ELSE B.amt_bought - S.amt_sold END) AS balance
+FROM eda_toks_bought B FULL OUTER JOIN eda_toks_sold S on B.token_address = S.token_address;
 
 -- COMMAND ----------
 
@@ -149,7 +244,10 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
+
+SELECT CAST(timestamp AS TIMESTAMP) AS timestamp, transaction_count
+FROM blocks;
 
 -- COMMAND ----------
 
@@ -159,8 +257,15 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ethereumetl;
 
+SELECT CAST(CAST(B.timestamp AS TIMESTAMP) AS DATE) AS date, COUNT(*)
+FROM blocks B, token_transfers T
+WHERE T.block_number=B.number
+GROUP BY B.timestamp;
+
+-- For some reason, the plot does not show up correctly in the output.
+-- However, when I click "Plot Options" the preview of the plot looks correct
 
 -- COMMAND ----------
 

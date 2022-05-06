@@ -41,7 +41,134 @@ spark.conf.set('start.date',start_date)
 
 # COMMAND ----------
 
+# MAGIC %run ./includes/ETLFunctions
 
+# COMMAND ----------
+
+# Strips down the tokens table to only ERC20 tokens. Also, adds pricing information
+# Only tracks tokens included in the token_prices_usd table since tokens without pricing info are not of interest to us
+# Only needs to be run once per day so that the token prices are up-to-date
+
+spark.sql("""DROP TABLE IF EXISTS g04_db.toks_silver""")
+
+tokens_silver = create_tokens_silver()
+
+(
+  tokens_silver.write
+    .format("delta")
+    .mode("overwrite")
+    .partitionBy("address")
+    .saveAsTable("g04_db.toks_silver")
+)
+
+# COMMAND ----------
+
+# Strips down the token_transfers table to a more manageable set of useful attributes
+# Also removes transfers that involve tokens not stored in the tokens_silver table (see above command)
+
+# Only the token ID -- NOT THE TOKEN ADDRESS -- is stored in this table
+
+spark.sql("""DROP TABLE IF EXISTS g04_db.tt_silver""")
+
+tt_silver = create_tt_silver()
+
+(tt_silver.write
+          .format("delta")
+          .mode("overwrite")
+          .partitionBy("id")
+          .saveAsTable('g04_db.tt_silver'))
+
+spark.sql("""OPTIMIZE g04_db.tt_silver ZORDER BY (to_address)""")
+
+# COMMAND ----------
+
+# Using the tt_silver & toks_silver tables, finds all addresses that bought coins and groups their total purchases
+
+spark.sql("""DROP TABLE IF EXISTS g04_db.bought""")
+
+bought = create_bought()
+
+bought.write\
+      .format("delta")\
+      .mode("overwrite")\
+      .partitionBy("id")\
+      .saveAsTable("g04_db.bought")
+
+spark.sql("""OPTIMIZE g04_db.bought ZORDER BY (to_addr)""")
+
+# COMMAND ----------
+
+# Same as bought but centered around the from_address showing total sales per coin
+
+spark.sql("""DROP TABLE IF EXISTS g04_db.sold""")
+
+sold = create_sold()
+
+sold.write\
+      .format("delta")\
+      .mode("overwrite")\
+      .partitionBy("id")\
+      .saveAsTable("g04_db.sold")
+    
+spark.sql("""OPTIMIZE g04_db.sold ZORDER BY (from_addr)""")
+
+# COMMAND ----------
+
+#Combines the bought and sold tables creating an active holding wallet
+
+spark.sql("""DROP TABLE IF EXISTS g04_db.with_bal""")
+
+with_bal = create_with_bal()
+
+with_bal.write\
+        .format("delta")\
+        .mode("overwrite")\
+        .partitionBy("id")\
+        .saveAsTable("g04_db.with_bal")
+
+spark.sql("""OPTIMIZE g04_db.with_bal ZORDER BY (addr)""")
+
+# COMMAND ----------
+
+#Converts the raw coin count from the wallet created above to a dollar value
+spark.sql("""DROP TABLE IF EXISTS g04_db.with_usd""")
+
+with_usd = create_with_usd()
+
+with_usd.write\
+        .format("delta")\
+        .mode("overwrite")\
+        .partitionBy("id")\
+        .saveAsTable("g04_db.with_usd")
+
+spark.sql("""OPTIMIZE g04_db.with_usd ZORDER BY (addr)""")
+
+# COMMAND ----------
+
+#Finds the unique wallets with a row number integer ID
+
+spark.sql("""DROP TABLE IF EXISTS g04_db.wallet_addrs""")
+
+wallet_addrs = create_wallet_addrs()
+
+wallet_addrs.write\
+            .format("delta")\
+            .mode("overwrite")\
+            .saveAsTable("g04_db.wallet_addrs")
+
+
+# COMMAND ----------
+
+#Finalizes the wallet construction creating a triple with a wallet ID int, token ID int and a value based on USD
+
+spark.sql("""DROP TABLE IF EXISTS g04_db.triple""")
+
+triple = create_triple()
+
+triple.write\
+      .format("delta")\
+      .mode("overwrite")\
+      .saveAsTable("g04_db.triple")
 
 # COMMAND ----------
 
