@@ -27,38 +27,44 @@ print(wallet_address,start_date)
 
 # COMMAND ----------
 
-##Currently Everything is selected to compare the name and symbol, for the actual application, comment out the select all and uncomment the top line. 
-rec = spark.sql("""
--- SELECT g04_db.toprecs_one_user.name, g04_db.toprecs_one_user.symbol, image, contract_address
-SELECT *
-FROM g04_db.toprecs_one_user
-LEFT JOIN ethereumetl.token_prices_usd
-ON UPPER(g04_db.toprecs_one_user.symbol) = UPPER(ethereumetl.token_prices_usd.symbol) 
--- AND UPPER(g04_db.toprecs_one_user.name) = UPPER(ethereumetl.token_prices_usd.name) 
-LIMIT 10
-""").toPandas()
+##Currently Everything is selected to compare the name and symbol, for the actual application, comment out the select all and uncomment the top line.
+tokensDF = spark.table("g04_db.toks_silver").cache()
+toprecsDF = spark.table("g04_db.toprecs_one_user").cache() 
+toprecsDF = toprecsDF.withColumnRenamed("name", "rec_name").withColumnRenamed("symbol", "rec_symbol")
+rec = toprecsDF.join(tokensDF, tokensDF.name==toprecsDF.rec_name).select('name', 'symbol', 'image', 'links')
+rec = rec.toPandas().head(10)
+# rec = spark.sql("""
+# -- SELECT g04_db.toprecs_one_user.name, g04_db.toprecs_one_user.symbol, image, contract_address
+# SELECT *
+# FROM g04_db.toprecs_one_user
+# INNER JOIN g04_db.toks_silver
+# ON UPPER(g04_db.toprecs_one_user.symbol) = UPPER(g04_db.toks_silver.symbol) 
+# AND g04_db.toprecs_one_user.name = g04_db.toks_silver.name
+# -- AND UPPER(g04_db.toprecs_one_user.name) = UPPER(ethereumetl.token_prices_usd.name) 
+# LIMIT 10
+# """).toPandas()
 
-rec
 ##uncomment to see the application
-# results = ""
-# if(rec.empty):
+results = ""
+if(rec.empty):
+    results = "<tr><td>Wallet address not found.</td></tr>"
 #     displayHTML("""<h2>Error: Recommendation Empty</h2>""")
-# else:
-#     for index, row in rec.iterrows():
-#         results += """
-#         <tr>
-#           <td style="padding:.5rem"><img src="{2}"></td>          
-#           <td style="padding:.5rem">{0} ({1})</td>          
-#           <td style="padding:.5rem"> <a href="https://etherscan.io/address/{3}"> <img src="https://freeiconshop.com/wp-content/uploads/edd/link-closed-flat.png" width="25" height="25"> </a> </td>
-#         </tr>
-#         """.format(row["name"], row["symbol"], row["image"] , row["contract_address"])
+else:
+    for index, row in rec.iterrows():
+        results += """
+        <tr>
+          <td style="padding:.5rem"><img src="{2}"></td>          
+          <td style="padding:.5rem">{0} ({1})</td>          
+          <td style="padding:.5rem"> <a href="https://etherscan.io/address/{3}"> <img src="https://freeiconshop.com/wp-content/uploads/edd/link-closed-flat.png" width="25" height="25"> </a> </td>
+        </tr>
+        """.format(row["name"], row["symbol"], row["image"] , row["links"])
     
-#     displayHTML("""
-#         <h2>Recommend Tokens for user address:</h2>
-#         <table style="padding:.5rem, border:0">
-#         {0}
-#         </table>
-#     """.format(results))
+    displayHTML("""
+        <h2>Recommend Tokens for User Address:</h2>
+        <table style="padding:.5rem, border:0">
+        {0}
+        </table>
+    """.format(results))
 
 # COMMAND ----------
 
