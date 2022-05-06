@@ -105,6 +105,17 @@ run_production=run_prod.version
 
 # COMMAND ----------
 
+# Visualize difference in RSME
+rsmes = [client.get_metric_history(run_id=run_stage.run_id, key='rsme')[0].value, client.get_metric_history(run_id=run_prod.run_id, key='rsme')[0].value]
+stage = ['Staging', 'Production']
+
+import matplotlib.pyplot as plt
+plt.bar(stage,rsmes)
+plt.ylabel("RSME")
+plt.show()
+
+# COMMAND ----------
+
 # If the RSME of staging model is less than that of production, promote staging model and archive production model
 if client.get_metric_history(run_id=run_stage.run_id, key='rsme')[0].value < client.get_metric_history(run_id=run_prod.run_id, key='rsme')[0].value:
     filter_string = "name='{}'".format('ALS')
