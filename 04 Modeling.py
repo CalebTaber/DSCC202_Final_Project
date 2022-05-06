@@ -94,8 +94,8 @@ from pyspark.sql import functions as F
 from mlflow.models.signature import ModelSignature
 from mlflow.types.schema import Schema, ColSpec
 
-ranks = [2, 4] # ranks we tried: [2, 4, 6, 8] (cut down so it will run faster)
-regParams = [0.1, 0.2] # regParams we tried [0.001, 0.05, 0.1, 0.2, 0.3] (cut down so it will run faster)
+ranks = [2, 3] # ranks we tried: [2, 4, 6, 8] (cut down so it will run faster)
+regParams = [0.1, 0.3] # regParams we tried [0.001, 0.05, 0.1, 0.2, 0.3] (cut down so it will run faster)
 errors = [[0]*len(ranks)]*len(regParams)
 models = [[0]*len(ranks)]*len(regParams)
 err = 0
@@ -130,7 +130,7 @@ for regParam in regParams:
             errors[i][j] = error
             models[i][j] = model
             print( 'For rank %s, regularization parameter %s the RMSE is %s' % (rank, regParam, error))
-            if error < min_error:
+            if error < min_error and error > 1000: # error less than 1000 is predicting all 0's
                 min_error = error
                 best_params = [i,j, run.info.run_id]
                 
@@ -186,7 +186,7 @@ client.transition_model_version_stage(
 # Test model in Staging
 # Evaluate model
 reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="active_holding_usd", metricName="rmse")
-predict_df = mlflow.spark.load_model('models:/'+"ALS"+'/Staging').stages[0].transform(test_df)
+predict_df = mlflow.spark.load_model('models:/'+"ALS"+'/Staging').stages[0].transform(validation_df)
 # Remove nan's from prediction
 predicted_test_df = predict_df.filter(predict_df.prediction != float('nan'))
 # Evaluate using RSME
