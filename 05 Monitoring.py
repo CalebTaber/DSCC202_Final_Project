@@ -25,58 +25,87 @@ print(wallet_address,start_date)
 
 # COMMAND ----------
 
-import random
-import mlflow
-import mlflow.spark
-from mlflow.tracking import MlflowClient
-from mlflow.models.signature import infer_signature
-from mlflow.models.signature import ModelSignature
-from mlflow.types.schema import Schema, ColSpec
-from delta.tables import *
-from pyspark.sql import DataFrame
-from pyspark.sql.types import *
+# MAGIC %md
+# MAGIC ## Compare staging and production model predictions for a user
+# MAGIC Changing the wallet address widget to compare different users
+
+# COMMAND ----------
+
+# Read in triplet data
+tripletDF = spark.table('g04_db.triple').cache()
+tripletDF = tripletDF.withColumnRenamed("addr_id", "user_int_id").withColumnRenamed("tok_id", "token_int_id").withColumnRenamed("bal_usd", "active_holding_usd")
+tripletDF = tripletDF.dropna(how="any", subset="active_holding_usd")
+
+# COMMAND ----------
+
+# Predict for a user
 from pyspark.sql import functions as F
-from pyspark.ml.recommendation import ALS
-from pyspark.ml.evaluation import RegressionEvaluator
-from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
-from mlflow.tracking.client import MlflowClient
-from pyspark.ml.feature import StringIndexer
-from pyspark.ml import Pipeline
-from pyspark.sql.functions import col
+tokensDF = spark.table("g04_db.toks_silver").cache()
+addressesDF = spark.table("g04_db.wallet_addrs").cache() 
+UserID = addressesDF[addressesDF['addr']==wallet_address].collect()[0][1]
+print(UserID)
+#UserID = 18330252 
+users_tokens = tripletDF.filter(tripletDF.user_int_id == UserID).join(tokensDF, tokensDF.id==tripletDF.token_int_id).select('token_int_id', 'name', 'symbol')                                           
+# generate list of tokens held 
+tokens_held_list = [] 
+# for tok in users_tokens.collect():   
+#     tokens_held_list.append(tok['name'])  
+print('Tokens user has held:') 
+users_tokens.select('name').show()  
+    
+# generate dataframe of tokens user doesn't have 
+tokens_not_held = tripletDF.filter(~ tripletDF['token_int_id'].isin([token['token_int_id'] for token in users_tokens.collect()])).select('token_int_id').withColumn('user_int_id', F.lit(UserID)).distinct()
 
 # COMMAND ----------
 
-# MAGIC %sql
-# MAGIC use G04_db;
+# Print prediction output for staging model
+model = mlflow.spark.load_model('models:/'+'ALS'+'/Staging')
+predicted_toks = model.transform(tokens_not_held)
+    
+print('Predicted Tokens:')
+toppredictions = predicted_toks.join(tripletDF, 'token_int_id') \
+                 .join(tokensDF, tokensDF.id==tripletDF.token_int_id) \
+                 .select('name', 'symbol') \
+                 .distinct() \
+                 .orderBy('prediction', ascending = False)
+print(toppredictions.show(5))
 
 # COMMAND ----------
 
-df_gold=spark.sql("SELECT * FROM g04_db.prediction_one_user")
+# Print prediction output for production model
+model = mlflow.spark.load_model('models:/'+'ALS'+'/Production')
+predicted_toks = model.transform(tokens_not_held)
+    
+print('Predicted Tokens:')
+toppredictions = predicted_toks.join(tripletDF, 'token_int_id') \
+                 .join(tokensDF, tokensDF.id==tripletDF.token_int_id) \
+                 .select('name', 'symbol') \
+                 .distinct() \
+                 .orderBy('prediction', ascending = False)
+print(toppredictions.show(5))
 
 # COMMAND ----------
 
-df_gold.display()
+# MAGIC %md
+# MAGIC ## Promote staging model to production if it's better
 
 # COMMAND ----------
 
+# Get staging and production models
 from mlflow.tracking import MlflowClient
 client = MlflowClient()
 run_stage = client.get_latest_versions('ALS', ["Staging"])[0]
-
-# COMMAND ----------
-
-run_staging=run_stage.version
-
-# COMMAND ----------
-
 run_prod = client.get_latest_versions('ALS', ["Production"])[0]
 
-# COMMAND ----------
+# Gets version of staged model
+run_staging=run_stage.version
 
+# Gets version of production model
 run_production=run_prod.version
 
 # COMMAND ----------
 
+# If the RSME of staging model is less than that of production, promote staging model and archive production model
 if client.get_metric_history(run_id=run_stage.run_id, key='rsme')[0].value < client.get_metric_history(run_id=run_prod.run_id, key='rsme')[0].value:
     filter_string = "name='{}'".format('ALS')
     for mv in client.search_model_versions(filter_string):
