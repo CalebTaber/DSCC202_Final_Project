@@ -62,7 +62,7 @@ df_gold.display()
 from mlflow.tracking import MlflowClient
 client = MlflowClient()
 run_stage = client.get_latest_versions('ALS', ["Staging"])[0]
-client.get_metric_history(run_id=run, key='rsme')[0].value
+stat_rmse=client.get_metric_history(run_id=run, key='rsme')[0].value
 
 # COMMAND ----------
 
@@ -71,7 +71,7 @@ run_staging=run_stage.version
 # COMMAND ----------
 
 run_prod = client.get_latest_versions('ALS', ["Production"])[0]
-client.get_metric_history(run_id=run, key='rsme')[0].value
+prod_rmse=client.get_metric_history(run_id=run, key='rsme')[0].value
 
 # COMMAND ----------
 
@@ -79,7 +79,7 @@ run_production=run_prod.version
 
 # COMMAND ----------
 
-if run_staging>run_production:
+if stat_rmse>prod_rmse:
     version_fin=run_staging
     client.transition_model_version_stage(
     name=model_name,
