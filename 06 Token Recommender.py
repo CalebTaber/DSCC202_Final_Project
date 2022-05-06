@@ -36,8 +36,7 @@ rec = rec.toPandas().head(10)
 
 results = ""
 if(rec.empty):
-    results = "<tr><td>Wallet address not found.</td></tr>"
-#     displayHTML("""<h2>Error: Recommendation Empty</h2>""")
+    displayHTML("""<h2>Error: Recommendation Empty</h2>""")
 else:
     for index, row in rec.iterrows():
         results += """
