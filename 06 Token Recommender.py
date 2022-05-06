@@ -60,7 +60,7 @@ else:
         """.format(row["name"], row["symbol"], row["image"] , row["links"])
     
     displayHTML("""
-        <h2>Recommend Tokens for User Address:</h2>
+        <h2>Recommend Tokens for User Address:""" + wallet_address + """</h2>
         <table style="padding:.5rem, border:0">
         {0}
         </table>
