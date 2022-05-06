@@ -43,16 +43,8 @@ print("Lifecycle_stage: {}".format(experiment.lifecycle_stage))
 
 # COMMAND ----------
 
-# Read in triplet data - wallets is currently a subset of all data
-tripletDF = spark.table('g04_db.triple').cache() # we may want to store this as a delta table in BASE_DELTA_PATH and read in from there
-
-# COMMAND ----------
-
-tripletDF.count()
-
-# COMMAND ----------
-
-display(tripletDF)
+# Read in triplet data
+tripletDF = spark.table('g04_db.triple').cache()
 
 # COMMAND ----------
 
@@ -98,25 +90,12 @@ reg_eval = RegressionEvaluator(predictionCol="prediction", labelCol="token_int_i
 
 # COMMAND ----------
 
-from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
-grid = ParamGridBuilder() \
-  .addGrid(als.maxIter, [10]) \
-  .addGrid(als.regParam, [0.1, 0.15]) \
-  .addGrid(als.rank, [2, 4]) \
-  .build()
-
-# COMMAND ----------
-
-cv = CrossValidator(estimator=als, evaluator=reg_eval, estimatorParamMaps=grid, numFolds=3)
-
-# COMMAND ----------
-
 from pyspark.sql import functions as F
 from mlflow.models.signature import ModelSignature
 from mlflow.types.schema import Schema, ColSpec
 
-ranks = [2, 4, 6, 8]
-regParams = [0.001, 0.05, 0.1, 0.2, 0.3]
+ranks = [2, 4] # ranks we tried: [2, 4, 6, 8] (cut down so it will run faster)
+regParams = [0.001, 0.1, 0.2] # regParams we tried [0.001, 0.05, 0.1, 0.2, 0.3] (cut down so it will run faster)
 errors = [[0]*len(ranks)]*len(regParams)
 models = [[0]*len(ranks)]*len(regParams)
 err = 0
@@ -173,10 +152,6 @@ my_model = models[best_params[0]][best_params[1]]
 
 # COMMAND ----------
 
-best_params[2]
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC ## Push best model to staging
 
@@ -196,7 +171,7 @@ for mv in client.search_model_versions(filter_string):
         print("Archiving: {}".format(dict(mv)))
         # Archive the currently staged model
         client.transition_model_version_stage(
-            name="ALS model",
+            name="ALS",
             version=dict(mv)['version'],
             stage="Archived"
             )
